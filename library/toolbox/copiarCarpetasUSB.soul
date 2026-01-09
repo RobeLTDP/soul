@@ -1,0 +1,21 @@
+##
+para montar carpetas desde USB:
+sudo mkdir -p /mnt/fotos
+sudo mount -t drvfs D: /mnt/fotos
+##
+
+str src = "/home/dmin/dev/soulc/library/baseFolder/"
+str dst = "/mnt/fotos/"
+
+printStr("Creando carpeta destino...")
+mkdir(dst)
+
+printStr("Copiando carpeta...")
+bool ok = copyFolder(src, dst)
+
+if ok:
+    printStr("OK: copyFolder finalizado correctamente")
+else:
+    printStr("ERROR: copyFolder ha fallado")
+
+printStr("Fin de prueba")

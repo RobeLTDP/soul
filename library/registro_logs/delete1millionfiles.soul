@@ -1,0 +1,16 @@
+diriter it = listdir("data_dst/new_data")
+
+int c = 0
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    str fullPath = concat("data_dst/new_data/", name)
+    remove(fullPath)
+
+    c = c + 1
+
+dir_close(it)
+print(c)

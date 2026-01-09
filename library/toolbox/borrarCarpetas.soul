@@ -1,0 +1,40 @@
+##
+Borra recursivamente todos los ficheros y subdirectorios de una carpeta.
+Uso:  soul run borrarCarpetas.soul --folder "library/carpeta" --password 'CONFIRM_DELETE'
+##
+
+str folder = arg("--folder")
+str password = arg("--password")
+
+bool ok = true
+
+if password != "CONFIRM_DELETE":
+    printStr("ERROR: invalid token")
+    ok = false
+
+if folder == "":
+    printStr("ERROR: invalid folder")
+    ok = false
+
+if startswith(folder, "/"):
+    printStr("ERROR: invalid folder")
+    ok = false
+
+if folder == "..":
+    printStr("ERROR: invalid folder")
+    ok = false
+
+if startswith(folder, "../"):
+    printStr("ERROR: invalid folder")
+    ok = false
+
+if ok:
+    folder = concat("/home/dmin/dev/soulc/", folder)
+
+    printStr("REMOVING:")
+    printStr(folder)
+
+    if removeTree(folder) == false:
+        printStr("ERROR: removeTree failed")
+    else:
+        printStr("DONE")

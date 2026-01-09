@@ -1,0 +1,6 @@
+##
+Creación de la carpeta "exampleFolder"
+## 
+
+mkdir("exampleFolder2")
+printStr("hecho")

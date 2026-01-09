@@ -1,0 +1,28 @@
+diriter it = listdir("data_src")
+
+int f = open("data_src/log.json", "w")
+write(f, "[")
+
+int c = 0
+str sep = ""
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    int ts = mtime(buildstr("data_src/", name))
+
+    write(f, sep)
+    write(f, buildstr("{name:", name, ",mtime:", toStr(ts), "}"))
+
+    sep = ","
+    c = c + 1
+    if c == 99999:
+        break
+
+write(f, "]")
+close(f)
+
+dir_close(it)
+print(c)

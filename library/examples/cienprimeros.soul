@@ -1,0 +1,23 @@
+mkdir("data_dst")
+
+int count = 0
+diriter it = listdir("data_src")
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    if endswith(name, ".dat"):
+        str src = join("data_src", name)
+        str dst = join("data_dst", name)
+
+        if copy(src, dst) == 0:
+            printStr("copy failed")
+            break
+
+        count = count + 1
+        if count >= 100:
+            break
+
+dir_close(it)

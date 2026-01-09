@@ -1,0 +1,77 @@
+##
+Genera 100.000 ficheros .dat con nombre pseudoaleatorio
+en data_dst/new_data y crea un log.json con sus nombres.
+##
+
+# Crear carpetas destino (si ya existen, se ignora el error)
+mkdir("data_dst")
+mkdir("data_dst/new_data")
+
+# Abrir log.json
+int f = open("data_dst/new_data/log.json", "w")
+write(f, "[")
+
+int count = 0
+str sep = ""
+
+# Alfabeto para nombres "aleatorios"
+str base = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+int nChars = length(base)
+
+# Posición global en el alfabeto
+int pos = 0
+str prename = "f-"
+
+while true:    
+    if count == 100000:
+        break
+    
+    str fname = ""
+    int i = 0
+
+    while i < 12:
+        str ch = slice(base, pos, pos + 1)
+        fname = concat(fname, ch)
+
+        pos = pos + 1
+        if pos == nChars:
+            pos = 0
+
+        i = i + 1
+    
+    str countStr = toStr(count)
+
+    if count > 20000:        
+        prename = "g-"
+
+    if count > 40000:        
+        prename = "f-"
+
+    if count > 60000:        
+        prename = "g-"
+
+    if count > 80000:        
+        prename = "f-"
+
+
+    fname = buildstr(prename, countStr, "_", fname)
+
+    fname = concat(fname, ".dat")
+    
+    str fullPath = concat("data_dst/new_data/", fname)
+    
+    int fh = open(fullPath, "w")
+    write(fh, "OK")
+    close(fh)
+    
+    str line = buildstr("{'name':'", fname, "'}")
+
+    write(f, sep)
+    write(f, line)
+
+    sep = ","
+    count = count + 1
+
+write(f, "]")
+close(f)
+print(count)

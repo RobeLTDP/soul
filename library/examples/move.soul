@@ -1,0 +1,4 @@
+diriter it = listdir("test_src")
+
+for path name in it:
+    moveEntry("test_src", "test_dst", name)

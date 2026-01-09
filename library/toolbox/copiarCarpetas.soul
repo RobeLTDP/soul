@@ -1,0 +1,24 @@
+##
+Prueba del builtin copyFolder
+uso: soul run copiarCarpetas --folderOrigen {carpeta} --folderDestino {carpeta}
+##
+str folderOrigen = arg("--folderOrigen")
+str folderDestino = arg("--folderDestino")
+
+str src = concat("/home/dmin/dev/soulc/", folderOrigen)   
+str dst = concat("/home/dmin/dev/soulc/", folderDestino)   
+
+printStr(src)
+printStr(dst)
+printStr("Creando carpeta destino...")
+mkdir(dst)
+
+printStr("Copiando carpeta...")
+bool ok = copyFolder(src, dst)
+
+if ok:
+    printStr("OK: copyFolder finalizado correctamente")
+else:
+    printStr("ERROR: copyFolder ha fallado")
+
+printStr("Fin de prueba")

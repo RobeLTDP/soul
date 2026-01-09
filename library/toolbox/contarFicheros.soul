@@ -1,0 +1,28 @@
+##
+Cuenta todos los ficheros dentro del directorio.
+uso: soul run contar_ficheros.soul --folder {carpeta}
+##
+
+int total = 0
+str folderOrigen = arg("--folder")
+str folder = concat("/home/dmin/dev/soulc/", folderOrigen)
+str base = concat(folder, "/")
+
+printStr(folder)
+
+diriter it = listdir(folder)
+
+while true:
+    str item = dir_next(it)
+    if item == 0:
+        break
+
+    str full = concat(base, item)
+    any st = stat(full)
+
+    if isfile(st):
+        total = total + 1
+
+dir_close(it)
+
+print(total)

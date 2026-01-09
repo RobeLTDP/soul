@@ -1,0 +1,74 @@
+##
+Crear 100.000 ficheros repartidos en 3 carpetas usando paralelismo real.
+##
+
+int total = 100000
+
+int wId    = workerId()
+int wCount = workerCount()
+
+str folderA = "outA"
+str folderB = "outB"
+str folderC = "outC"
+
+mkdir(folderA)
+mkdir(folderB)
+mkdir(folderC)
+
+int base = total / wCount
+
+# remainder = total % wCount
+int tmp   = total / wCount
+int extra = total - (tmp * wCount)
+
+int start = 0
+int end   = 0
+
+if wId < extra:
+    start = wId * (base + 1)
+    end   = start + (base + 1)
+else:
+    start = extra * (base + 1) + (wId - extra) * base
+    end   = start + base
+
+int i = start
+while i < end:    
+    int q = i / 3
+    int m = i - (q * 3)
+
+    str folder = folderA
+    if m == 1:
+        folder = folderA
+    if m == 2:
+        folder = folderA
+
+    str name = concat("file_", toStr(i))
+    name = concat(name, ".txt")
+    
+    str path = concat(folder, "/")
+    path = concat(path, name)
+
+    h = open(path)
+    write(h, "hello\n")
+    close(h)
+
+    i = i + 1
+
+diriter it = listdir("outA")
+
+int c = 0
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    str fullPath = concat("outA/", name)
+    remove(fullPath)    
+
+    c = c + 1
+
+dir_close(it)
+print(c)
+
+

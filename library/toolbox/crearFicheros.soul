@@ -1,0 +1,30 @@
+##
+Crear 100K ficheros en una carpeta
+uso: soul run crearFicheros --folder {carpeta}
+##
+
+str folder = arg("--folder")
+
+if folder == "":
+    printStr("ERROR: missing --folder")
+    return
+
+mkdir(folder)
+
+int i = 0
+int max = 1000
+
+while i < max:
+    str name = concat("file_", toStr(i))
+    name = concat(name, ".txt")
+
+    str path = concat(folder, "/")
+    path = concat(path, name)
+
+    file h = open(path)
+    write(h, "Done!\n")
+    close(h)
+
+    i = i + 1
+
+print(i)

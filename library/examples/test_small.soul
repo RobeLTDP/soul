@@ -1,0 +1,29 @@
+mkdir("logs")
+
+str logFile = "logs/test.log"
+str msg = ""
+int count = 0
+
+diriter it = listdir("test_data")
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    if not endswith(name, ".dat"):
+        continue
+
+    count = count + 1
+
+    msg = join("found: ", name)
+    msg = join(msg, "\n")
+    append(logFile, msg)
+
+dir_close(it)
+
+str summary = join("total .dat files: ", count)
+summary = join(summary, "\n")
+append(logFile, summary)
+
+print(count)

@@ -1,0 +1,13 @@
+str base = "data_src/subfolder/verylongpath/"
+str a = "file_"
+str b = ".json"
+
+int i = 0
+
+while i < 200000:
+    str x = concat(base, a)
+    x = concat(x, "123")
+    x = concat(x, b)
+    i = i + 1
+
+print(i)

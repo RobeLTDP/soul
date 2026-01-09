@@ -1,0 +1,63 @@
+##
+para montar carpetas desde USB:
+sudo mkdir -p /mnt/aeds_sis
+sudo mount -t drvfs D: /mnt/aeds_sis
+##
+
+str srcRoot = "/mnt/aeds_sis/eOne2019/KIN"
+str dstRoot = "/home/dmin/dev/soulc/examples/kin"
+
+mkdir(dstRoot)
+
+diriter it = listdir(srcRoot)
+
+while true:
+    str dirName = dir_next(it)
+    if dirName == 0:
+        break
+
+    # srcPath = srcRoot + "/" + dirName
+    str srcPath = concat(srcRoot, "/")
+    srcPath = concat(srcPath, dirName)
+
+    stat s = stat(srcPath)
+
+    if isfile(s):
+        printStr("Fichero:")
+        printStr(dirName)
+
+    if isdir(s):
+        printStr("Carpeta:")
+        printStr(dirName)
+
+        # crear carpeta destino
+        str dstPath = concat(dstRoot, "/")
+        dstPath = concat(dstPath, dirName)
+        mkdir(dstPath)
+
+        # iterar ficheros dentro
+        diriter itFiles = listdir(srcPath)
+
+        while true:
+            str fileName = dir_next(itFiles)
+            if fileName == 0:
+                break
+
+            # srcFile = srcPath + "/" + fileName
+            str srcFile = concat(srcPath, "/")
+            srcFile = concat(srcFile, fileName)
+
+            # dstFile = dstPath + "/" + fileName
+            str dstFile = concat(dstPath, "/")
+            dstFile = concat(dstFile, fileName)
+
+            stat sf = stat(srcFile)
+
+            if isfile(sf):
+                copy(srcFile, dstFile)
+
+        dir_close(itFiles)
+
+dir_close(it)
+
+printStr("Fin")
