@@ -214,10 +214,33 @@ final class Lowerer
 
     private function lowerIf(IfStmt $stmt): void
     {
+        $condReg = $this->lowerExpression($stmt->condition);
+
+        if ($stmt->elseBlock === null) {
+            // IF sin else
+            $endLabel = $this->newLabel('if_end_');
+
+            $this->program->add(
+                new IrInstruction(
+                    OpCode::JMP_IF_FALSE,
+                    [$condReg, IrOperand::label($endLabel)]
+                )
+            );
+
+            foreach ($stmt->thenBlock as $s) {
+                $this->lowerStatement($s);
+            }
+
+            $this->program->add(
+                new IrInstruction(OpCode::LABEL, [IrOperand::label($endLabel)])
+            );
+
+            return;
+        }
+
+        // IF con else
         $elseLabel = $this->newLabel('if_else_');
         $endLabel  = $this->newLabel('if_end_');
-
-        $condReg = $this->lowerExpression($stmt->condition);
 
         $this->program->add(
             new IrInstruction(
@@ -238,10 +261,8 @@ final class Lowerer
             new IrInstruction(OpCode::LABEL, [IrOperand::label($elseLabel)])
         );
 
-        if ($stmt->elseBlock !== null) {
-            foreach ($stmt->elseBlock as $s) {
-                $this->lowerStatement($s);
-            }
+        foreach ($stmt->elseBlock as $s) {
+            $this->lowerStatement($s);
         }
 
         $this->program->add(
