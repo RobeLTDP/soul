@@ -210,13 +210,19 @@ class Parser
 
     private function parseFor(): ForStmt
     {
-        // for <type> <name> in <expr> : NEWLINE block
-        $typeTok = $this->consume("TYPE", "Se esperaba tipo en 'for'");
-        $varType = $typeTok->value;
+        // for [TYPE] IDENTIFIER in <expr> : NEWLINE block
 
-        if ($this->match("LBRACKET")) {
-            $this->consume("RBRACKET", "Se esperaba ']' para tipo array");
-            $varType = $varType . "[]";
+        $varType = "path"; // ← tipo por defecto en Soul v0.1
+
+        // Tipo opcional
+        if ($this->check("TYPE")) {
+            $typeTok = $this->advance();
+            $varType = $typeTok->value;
+
+            if ($this->match("LBRACKET")) {
+                $this->consume("RBRACKET", "Se esperaba ']' para tipo array");
+                $varType .= "[]";
+            }
         }
 
         $nameTok = $this->consume("IDENTIFIER", "Se esperaba nombre de variable en 'for'");
@@ -228,6 +234,7 @@ class Parser
 
         return new ForStmt($varType, $nameTok->value, $iterable, $body);
     }
+
 
     private function parseParallel(): ParallelStmt
     {

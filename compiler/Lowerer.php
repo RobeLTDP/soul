@@ -20,6 +20,8 @@ require_once SOUL_ROOT . '/ast/Identifier.php';
 require_once SOUL_ROOT . '/ast/BreakStmt.php';
 require_once SOUL_ROOT . '/ast/StopStmt.php';
 require_once SOUL_ROOT . '/ast/ContinueStmt.php';
+require_once SOUL_ROOT . '/ast/ParallelStmt.php';
+
 
 
 final class Lowerer
@@ -33,6 +35,8 @@ final class Lowerer
     /** @var string[] */
     private array $continueStack = [];
 
+    private ?int $parallelWorkers = null;
+    private bool $inParallel = false;
 
 
     public function lower(Program $ast): IrProgram
@@ -41,9 +45,12 @@ final class Lowerer
         $this->regCounter = 0;
         $this->labelCounter = 0;
 
-        foreach ($ast->statements as $stmt) {
-            $this->lowerStatement($stmt);
-        }
+        //foreach ($ast->statements as $stmt) {
+        //    $this->lowerStatement($stmt);
+        //}
+
+        $this->lowerTopLevel($ast->statements);
+
 
         $this->program->add(new IrInstruction(OpCode::EXIT));
         return $this->program;
@@ -58,6 +65,8 @@ final class Lowerer
         return IrOperand::reg('r' . $this->regCounter++);
     }
 
+
+    
     private function newLabel(string $prefix = 'L'): string
     {
         return $prefix . $this->labelCounter++;
@@ -119,13 +128,6 @@ final class Lowerer
             return;
         }
 
-
-        if ($stmt instanceof CallExpr) {
-            // llamada como statement (sin valor de retorno)
-            $this->lowerCall($stmt, null);
-            return;
-        }
-
         if ($stmt instanceof WhileStmt) {
             $this->lowerWhile($stmt);
             return;
@@ -135,6 +137,16 @@ final class Lowerer
             $this->lowerIf($stmt);
             return;
         }
+
+        if ($stmt instanceof ParallelStmt) {
+            // En top-level esto se gestiona en lowerTopLevel().
+            // Si apareciera dentro de otros bloques (if/while/for),
+            // lo emitimos también de forma estructural.
+            $this->lowerParallelStmt($stmt);
+            return;
+        }
+
+            
 
         if ($stmt instanceof ForStmt) {
             $this->lowerFor($stmt);
@@ -157,7 +169,11 @@ final class Lowerer
             return;
         }
 
-
+        if ($stmt instanceof CallExpr) {
+            // llamada como statement (sin valor de retorno)
+            $this->lowerCall($stmt, null);
+            return;
+        }
 
         // Otros statements se añadirán después
         // (For, Parallel, Stop, Check…)
@@ -210,7 +226,172 @@ final class Lowerer
         array_pop($this->continueStack);
     }
 
+private function lowerTopLevel(array $statements): void
+{
+    $segment = [];
 
+    foreach ($statements as $stmt) {
+        if ($stmt instanceof ParallelStmt) {
+            // Emitir primero el segmento secuencial acumulado (solo worker 0)
+            if (!empty($segment)) {
+                $this->lowerSequentialSegmentOnlyWorker0($segment);
+                $segment = [];
+            }
+
+            // Emitir el parallel como constructo estructural
+            $this->lowerParallelStmt($stmt);
+            continue;
+        }
+
+        $segment[] = $stmt;
+    }
+
+    // Último segmento secuencial
+    if (!empty($segment)) {
+        $this->lowerSequentialSegmentOnlyWorker0($segment);
+    }
+}
+
+private function lowerSequentialSegmentOnlyWorker0(array $segment): void
+{
+    // if (workerId() != 0) goto skip;
+    $rWorkerId = $this->newReg();
+    $this->program->add(
+        new IrInstruction(
+            OpCode::CALL_BUILTIN,
+            [IrOperand::lit('workerId'), $rWorkerId]
+        )
+    );
+
+    $rZero = $this->newReg();
+    $this->program->add(
+        new IrInstruction(
+            OpCode::LOAD_CONST,
+            [IrOperand::lit(0), $rZero]
+        )
+    );
+
+    $rCond = $this->newReg();
+    $this->program->add(
+        new IrInstruction(
+            OpCode::CMP_NE,
+            [$rWorkerId, $rZero, $rCond]
+        )
+    );
+
+    $skipLabel = $this->newLabel('seq_skip_');
+
+    // JMP_IF_FALSE salta si cond == false.
+    // Queremos saltar el segmento si cond == true (workerId != 0),
+    // así que invertimos: si NO(cond) -> ejecuta; si cond -> goto skip.
+    //
+    // Forma mínima con lo que tienes:
+    // if (cond) goto skip:
+    //   JMP_IF_FALSE cond, label_after_jmp
+    //   JMP skip
+    // label_after_jmp:
+    $afterJmpLabel = $this->newLabel('seq_after_if_');
+
+    $this->program->add(
+        new IrInstruction(
+            OpCode::JMP_IF_FALSE,
+            [$rCond, IrOperand::label($afterJmpLabel)]
+        )
+    );
+
+    $this->program->add(
+        new IrInstruction(
+            OpCode::JMP,
+            [IrOperand::label($skipLabel)]
+        )
+    );
+
+    $this->program->add(
+        new IrInstruction(
+            OpCode::LABEL,
+            [IrOperand::label($afterJmpLabel)]
+        )
+    );
+
+    // Emitir segmento (solo ejecutará worker 0)
+    foreach ($segment as $s) {
+        $this->lowerStatement($s);
+    }
+
+    // Label de salida para workers != 0
+    $this->program->add(
+        new IrInstruction(
+            OpCode::LABEL,
+            [IrOperand::label($skipLabel)]
+        )
+    );
+}
+
+    private function lowerParallelStmt(ParallelStmt $stmt): void
+    {
+        // rW = N
+        $rW = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::LOAD_CONST,
+                [IrOperand::lit($stmt->workers), $rW]
+            )
+        );
+
+        // parallelRun(N)
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('parallelRun'), $rW]
+            )
+        );
+
+        // --- GUARD: si workerId >= N, saltar el cuerpo ---
+        $rWorkerId = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('workerId'), $rWorkerId]
+            )
+        );
+
+        // cond = (workerId < N)
+        $rCond = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CMP_LT,
+                [$rWorkerId, $rW, $rCond]
+            )
+        );
+
+        $afterParallelBody = $this->newLabel('parallel_after_body_');
+
+        // if (!cond) goto afterParallelBody;
+        $this->program->add(
+            new IrInstruction(
+                OpCode::JMP_IF_FALSE,
+                [$rCond, IrOperand::label($afterParallelBody)]
+            )
+        );
+
+        // cuerpo del bloque (solo workers < N)
+        foreach ($stmt->body as $s) {
+            $this->lowerStatement($s);
+        }
+
+        // salida del cuerpo paralelo
+        $this->program->add(
+            new IrInstruction(OpCode::LABEL, [IrOperand::label($afterParallelBody)])
+        );
+
+        // parallelWait(N)
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('parallelWait'), $rW]
+            )
+        );
+    }
 
     private function lowerIf(IfStmt $stmt): void
     {
@@ -270,82 +451,75 @@ final class Lowerer
         );
     }
 
-    private function lowerFor(ForStmt $stmt): void
-    {
-        // 1) iter = listdir(<expr>)
-        $iterReg = $this->newReg();
-        // listdir devuelve un "diriter" (handle)
-        $this->program->add(
-            new IrInstruction(
-                OpCode::CALL_BUILTIN,
-                [IrOperand::lit('listdir'), $this->lowerExpression($stmt->iterable), $iterReg]
-            )
-        );
+private function lowerFor(ForStmt $stmt): void
+{
+    $iterReg = $this->lowerExpression($stmt->iterable);
 
-        $startLabel = $this->newLabel('for_start_');
-        $endLabel   = $this->newLabel('for_end_');
+    $startLabel = $this->newLabel('for_start_');
+    $endLabel   = $this->newLabel('for_end_');
+    
+    $this->continueStack[] = $startLabel;
+    $this->breakStack[]    = $endLabel;
 
-        $this->program->add(
-            new IrInstruction(OpCode::LABEL, [IrOperand::label($startLabel)])
-        );
+    $this->program->add(
+        new IrInstruction(OpCode::LABEL, [IrOperand::label($startLabel)])
+    );
 
-        // 2) elem = dir_next(iter)
-        $elemReg = $this->newReg();
-        $this->program->add(
-            new IrInstruction(
-                OpCode::CALL_BUILTIN,
-                [IrOperand::lit('dir_next'), $iterReg, $elemReg]
-            )
-        );
+    $elemReg = $this->newReg();
+    $this->program->add(
+        new IrInstruction(
+            OpCode::CALL_BUILTIN,
+            [IrOperand::lit('dir_next'), $iterReg, $elemReg]
+        )
+    );
 
-        // 3) if elem == null -> end
-        // Usamos CMP_NE + JMP_IF_FALSE para saltar cuando sea null:
-        // cond = (elem != null)
-        $condReg = $this->newReg();
-        $nullReg = $this->newReg();
-        $this->program->add(
-            new IrInstruction(OpCode::LOAD_CONST, [IrOperand::lit(null), $nullReg])
-        );
-        $this->program->add(
-            new IrInstruction(OpCode::CMP_NE, [$elemReg, $nullReg, $condReg])
-        );
-        $this->program->add(
-            new IrInstruction(
-                OpCode::JMP_IF_FALSE,
-                [$condReg, IrOperand::label($endLabel)]
-            )
-        );
+    $condReg = $this->newReg();
+    $nullReg = $this->newReg();
 
-        // 4) f = elem
-        $this->program->add(
-            new IrInstruction(
-                OpCode::STORE_VAR,
-                [$elemReg, IrOperand::var($stmt->varName)]
-            )
-        );
+    $this->program->add(
+        new IrInstruction(OpCode::LOAD_CONST, [IrOperand::lit(null), $nullReg])
+    );
+    $this->program->add(
+        new IrInstruction(OpCode::CMP_NE, [$elemReg, $nullReg, $condReg])
+    );
+    $this->program->add(
+        new IrInstruction(
+            OpCode::JMP_IF_FALSE,
+            [$condReg, IrOperand::label($endLabel)]
+        )
+    );
 
-        // 5) body
-        foreach ($stmt->body as $s) {
-            $this->lowerStatement($s);
-        }
+    $this->program->add(
+        new IrInstruction(
+            OpCode::STORE_VAR,
+            [$elemReg, IrOperand::var($stmt->varName)]
+        )
+    );
 
-        // 6) loop
-        $this->program->add(
-            new IrInstruction(OpCode::JMP, [IrOperand::label($startLabel)])
-        );
-
-        $this->program->add(
-            new IrInstruction(OpCode::LABEL, [IrOperand::label($endLabel)])
-        );
-
-        // 7) dir_close(iter)
-        $this->program->add(
-            new IrInstruction(
-                OpCode::CALL_BUILTIN,
-                [IrOperand::lit('dir_close'), $iterReg]
-            )
-        );
+    foreach ($stmt->body as $s) {
+        $this->lowerStatement($s);
     }
+
+    $this->program->add(
+        new IrInstruction(OpCode::JMP, [IrOperand::label($startLabel)])
+    );
+
+    $this->program->add(
+        new IrInstruction(OpCode::LABEL, [IrOperand::label($endLabel)])
+    );
+
+    // 🔴 Y ESTO
+    array_pop($this->breakStack);
+    array_pop($this->continueStack);
+
+    $this->program->add(
+        new IrInstruction(
+            OpCode::CALL_BUILTIN,
+            [IrOperand::lit('dir_close'), $iterReg]
+        )
+    );
+}
+
 
 
 
@@ -454,17 +628,30 @@ final class Lowerer
             $argRegs[] = $this->lowerExpression($arg);
         }
 
-        $operands = [
-            IrOperand::lit($call->name),
-            ...$argRegs
-        ];
-
         if ($dst !== null) {
-            $operands[] = $dst;
+            // llamada con retorno
+            $this->program->add(
+                new IrInstruction(
+                    OpCode::CALL_BUILTIN,
+                    [
+                        IrOperand::lit($call->name),
+                        ...$argRegs,
+                        $dst
+                    ]
+                )
+            );
+        } else {
+            // llamada como statement (sin retorno)
+            $this->program->add(
+                new IrInstruction(
+                    OpCode::CALL_BUILTIN,
+                    [
+                        IrOperand::lit($call->name),
+                        ...$argRegs
+                    ]
+                )
+            );
         }
-
-        $this->program->add(
-            new IrInstruction(OpCode::CALL_BUILTIN, $operands)
-        );
     }
+
 }

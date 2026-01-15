@@ -85,7 +85,11 @@ final class CEmitter
                     ) {
                         // Nota: cLiteral ya devuelve "..." para strings, pero aquí asignamos a uintptr_t:
                         // el cast se hace en emitLoadConst (ver nota más abajo).
-                        $out[] = '  ' . $this->cVar($var->name) . ' = ' . $this->cLiteral($lit->value) . ';';
+                        if (is_string($lit->value)) {
+                            $out[] = '  ' . $this->cVar($var->name) . ' = (uintptr_t)' . $this->cLiteral($lit->value) . ';';
+                        } else {
+                            $out[] = '  ' . $this->cVar($var->name) . ' = (uintptr_t)' . $this->cLiteral($lit->value) . ';';
+                        }
                         $i++; // saltar STORE_VAR
                         continue;
                     }
@@ -172,7 +176,8 @@ final class CEmitter
                         $b instanceof IrReg &&
                         $dst instanceof IrReg &&
                         $rX->name === $a->name &&
-                        $rY->name === $b->name
+                        $rY->name === $b->name &&
+                        (is_int($lit->value) || is_bool($lit->value) || is_float($lit->value))
                     ) {
                         $cVar = $this->cVar($var->name);
                         $cLit = $this->cLiteral($lit->value);
@@ -192,6 +197,7 @@ final class CEmitter
                         $i += 2;
                         continue;
                     }
+
                 }
             }
 
@@ -243,8 +249,7 @@ final class CEmitter
                 $out[] = $line;
             }
         }
-
-        $out[] = '  return 0;';
+        
         $out[] = '}';
         $out[] = '';
 
@@ -898,14 +903,19 @@ final class CEmitter
 'static uintptr_t soul_isfile(uintptr_t p) {',
 '    struct stat* st = (struct stat*)p;',
 '    if (!st) return 0;',
-'    return S_ISREG(st->st_mode) ? 1 : 0;',
+'    int r = S_ISREG(st->st_mode) ? 1 : 0;',
+'    soul_stat_free(p);',
+'    return (uintptr_t)r;',
 '}',
 '',
 'static uintptr_t soul_isdir(uintptr_t p) {',
 '    struct stat* st = (struct stat*)p;',
 '    if (!st) return 0;',
-'    return S_ISDIR(st->st_mode) ? 1 : 0;',
+'    int r = S_ISDIR(st->st_mode) ? 1 : 0;',
+'    soul_stat_free(p);',
+'    return (uintptr_t)r;',
 '}',
+'',
 'static uintptr_t soul_dir_next(uintptr_t h) {',
 '  if (h == 0) return (uintptr_t)0;',
 '  int idx = (int)h - 1;',
@@ -998,16 +1008,21 @@ final class CEmitter
 '// --------------------------------------------------',
 '// Parallel workers (for future parallel execution)',
 '// --------------------------------------------------',
+'#include <sys/types.h>',
+'#include <sys/wait.h>',
 '#include <stdlib.h>',
 '',
 'static int soul_worker_id = 0;',
 'static int soul_worker_count = 1;',
 'static int soul_worker_inited = 0;',
+'static int soul_job_id = 0;',
 '',
 'static void soul_worker_init(void) {',
 '    if (soul_worker_inited) return;',
 '    const char* sid = getenv("SOUL_WORKER_ID");',
 '    const char* sc  = getenv("SOUL_WORKER_COUNT");',
+'    const char* sj  = getenv("SOUL_JOB_ID");',
+'    if (sj) soul_job_id = atoi(sj);',
 '    if (sid) soul_worker_id = atoi(sid);',
 '    if (sc)  soul_worker_count = atoi(sc);',
 '    soul_worker_inited = 1;',
@@ -1023,75 +1038,84 @@ final class CEmitter
 '    return (uintptr_t)soul_worker_count;',
 '}',
 '',
-'static uintptr_t soul_copyFolder(const char* src, const char* dst) {',
-'  if (!src || !dst) return 0;',
+'static void soul_parallel_run(int workers) {',
+'    if (workers <= 1) return;',
 '',
-'  soul_copyFolder_depth++;',
-'  int is_root = (soul_copyFolder_depth == 1);',
-'  if (is_root) soul_progress_begin("copy");',
+'    // Si ya vienes con env vars, no lances hijos otra vez',
+'    soul_worker_init();',
+' if (getenv("SOUL_WORKER_ID") && getenv("SOUL_WORKER_COUNT")) return;',
 '',
-'  struct stat st;',
-'  if (stat(src, &st) != 0 || !S_ISDIR(st.st_mode)) {',
-'    soul_copyFolder_depth--;',
-'    if (is_root) soul_progress_end(0);',
-'    return 0;',
-'  }',
-'',
-'  // crear destino si no existe',
-'  syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
-'',
-'  int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
-'  if (fd < 0) {',
-'    soul_copyFolder_depth--;',
-'    if (is_root) soul_progress_end(0);',
-'    return 0;',
-'  }',
-'',
-'  char buf[1 << 16];',
-'',
-'  for (;;) {',
-'    int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
-'    if (nread <= 0) break;',
-'',
-'    int bpos = 0;',
-'    while (bpos < nread) {',
-'      if (is_root) soul_progress_tick();',
-'',
-'      struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
-'      bpos += d->d_reclen;',
-'',
-'      if (!d->d_name[0] ||',
-'          (d->d_name[0] == \'.\' &&',
-'          (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))) {',
-'        continue;',
-'      }',
-'',
-'      char srcPath[4096];',
-'      char dstPath[4096];',
-'',
-'      snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
-'      snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
-'',
-'      if (stat(srcPath, &st) != 0) continue;',
-'',
-'      if (S_ISDIR(st.st_mode)) {',
-'        soul_copyFolder(srcPath, dstPath);',
-'      } else if (S_ISREG(st.st_mode)) {',
-'        soul_copy(srcPath, dstPath);',
-'      }',
+'    // Parent (worker 0) lanza N-1 hijos',
+    'soul_job_id = getpid();',
+    '{',
+    '    char sj[16];',
+    '    snprintf(sj, sizeof(sj), "%d", soul_job_id);',
+    '    setenv("SOUL_JOB_ID", sj, 1);',
+    '}',
+    '',
+'    for (int i = 1; i < workers; i++) {',
+'        pid_t pid = fork();',
+'        if (pid == 0) {',
+'            // Child: set env and continue execution',
+'            char sid[16], sc[16];',
+'            snprintf(sid, sizeof(sid), "%d", i);',
+'            snprintf(sc,  sizeof(sc),  "%d", workers);',
+'            setenv("SOUL_WORKER_ID", sid, 1);',
+'            setenv("SOUL_WORKER_COUNT", sc, 1);',
+'            soul_worker_inited = 0;',
+'            soul_worker_init();',
+'            return; // el hijo vuelve y ejecuta el bloque',
+'        }',
 '    }',
-'  }',
 '',
-'  syscall(SYS_close, fd);',
-'',
-'  soul_copyFolder_depth--;',
-'  if (is_root) soul_progress_end(1);',
-'',
-'  return 1;',
+'    // Parent se queda con worker 0',
+'    {',
+'        char sid[16], sc[16];',
+'        snprintf(sid, sizeof(sid), "%d", 0);',
+'        snprintf(sc,  sizeof(sc),  "%d", workers);',
+'        setenv("SOUL_WORKER_ID", sid, 1);',
+'        setenv("SOUL_WORKER_COUNT", sc, 1);',
+'        soul_worker_inited = 0;',
+'        soul_worker_init();',
+'    }',
 '}',
 '',
-
-
+'static void soul_parallel_wait(int workers) {',
+'    soul_worker_init();',
+'    if (soul_worker_id != 0) return; // solo espera el padre',
+'    if (workers <= 1) return;',
+'',
+'    for (int i = 1; i < workers; i++) {',
+'        int status = 0;',
+'        wait(&status);',
+'    }',
+'',
+'    // limpieza de temporales del job (solo el padre, cuando todos han terminado)',
+'    {',
+'        char lstPath[256];',
+'        char metaPath[256];',
+'        char counterPath[256];',
+'        char startPath[256];',
+'',
+'        snprintf(lstPath, sizeof(lstPath), "/tmp/soul_copy_%d.lst", soul_job_id);',
+'        snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+'        snprintf(counterPath, sizeof(counterPath), "/tmp/soul_counter_copy_idx_%d", soul_job_id);',
+'        snprintf(startPath, sizeof(startPath), "/tmp/soul_copy_%d.start", soul_job_id);',
+'',
+'        unlink(lstPath);',
+'        unlink(metaPath);',
+'        unlink(startPath);',
+'        if (soul_worker_id == 0) {',
+'            unlink(counterPath);',
+'        }',
+'    }',
+'}',
+'',
+'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst);',
+'static uintptr_t soul_copyFolder(const char* src, const char* dst) {',
+'  return soul_copyFolder_parallel(src, dst);',
+'}',
+'',
             '// IPv4: "A.B.C.D" -> uint32 (network order)',
             'static uint32_t soul_inet_addr(const char* s) {',
             '  uint32_t parts[4];',
@@ -1294,7 +1318,165 @@ final class CEmitter
             '    return (w == (long)len) ? 1 : 0;',
             '}',
             '',
-
+            'static char soul_copy_list_path[256];',            
+            '',
+            'static int64_t soul_copy_total_files = 0;',
+'static void soul_copy_collect(const char* src, const char* dst) {',
+'  struct stat st;',
+'  if (stat(src, &st) != 0) return;',
+'',
+'  if (S_ISDIR(st.st_mode)) {',
+'    syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
+'',
+'    int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
+'    if (fd < 0) return;',
+'',
+'    char buf[1 << 16];',
+'    for (;;) {',
+'      int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+'      if (nread <= 0) break;',
+'',
+'      int bpos = 0;',
+'      while (bpos < nread) {',
+'        struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+'        bpos += d->d_reclen;',
+'',
+'        if (d->d_name[0] == \'.\' &&',
+'           (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
+'          continue;',
+'',
+'        char srcPath[4096];',
+'        char dstPath[4096];',
+'        snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
+'        snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
+'',
+'        soul_copy_collect(srcPath, dstPath);',
+'      }',
+'    }',
+'    syscall(SYS_close, fd);',
+'  }',
+'  else if (S_ISREG(st.st_mode)) {',
+'    char line[8192];',
+'    int n = snprintf(line, sizeof(line), "%s|%s\\n", src, dst);',
+'    if (n > 0) {',
+'      soul_atomic_append(soul_copy_list_path, line);',
+'      soul_copy_total_files++;',
+'    }',
+'  }',
+'}',
+'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst) {',
+'  soul_worker_init();',
+'',
+'  snprintf(',
+'    soul_copy_list_path,',
+'    sizeof(soul_copy_list_path),',
+'    "/tmp/soul_copy_%d.lst",',
+'    soul_job_id',
+'  );',
+'',
+'  if (soul_worker_id == 0) {',
+'    soul_progress_begin("scan");',
+'soul_copy_total_files = 0;',
+'soul_copy_collect(src, dst);',
+'',
+'// guardar total en fichero',
+'char metaPath[256];',
+'snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+'FILE* mf = fopen(metaPath, "w");',
+'if (mf) {',
+'    fprintf(mf, "%lld\n", (long long)soul_copy_total_files);',
+'    fclose(mf);',
+'}',
+'',
+'soul_progress_end(1);',
+'  }',
+'',
+'  while (access(soul_copy_list_path, F_OK) != 0) {',
+'    usleep(1000);',
+'  }',
+'char metaPath[256];',
+'snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+'',
+'FILE* mf = NULL;',
+'while (!mf) {',
+'    mf = fopen(metaPath, "r");',
+'    if (!mf) usleep(1000);',
+'}',
+'',
+'fscanf(mf, "%lld", &soul_copy_total_files);',
+'fclose(mf);',
+'',
+'  // reset contador atómico + barrera de arranque',
+'  char counterPath[256];',
+'  char startPath[256];',
+'',
+'  snprintf(counterPath, sizeof(counterPath), "/tmp/soul_counter_copy_idx_%d", soul_job_id);',
+'  snprintf(startPath, sizeof(startPath), "/tmp/soul_copy_%d.start", soul_job_id);',
+'',
+'  if (soul_worker_id == 0) {',
+'      unlink(counterPath);',
+'      unlink(startPath);',
+'      int fd = (int)syscall(SYS_openat, AT_FDCWD, startPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+'      if (fd >= 0) syscall(SYS_close, fd);',
+'      soul_progress_begin("copy");',
+'  }',
+'',
+'  // esperar a que el contador haya sido reseteado por el worker 0',
+'  while (access(startPath, F_OK) != 0) {',
+'      usleep(1000);',
+'  }',
+'',
+'  for (;;) {',
+'    char counterName[64];',
+'    snprintf(counterName, sizeof(counterName), "copy_idx_%d", soul_job_id);',
+'',
+'    int idx = (int)soul_atomic_counter(counterName) - 1;',
+'',
+'    // parada dura: no hay mas trabajo',
+'    if (idx >= soul_copy_total_files) {',
+'      break;',
+'    }',
+'',
+'    FILE* f = fopen(soul_copy_list_path, "r");',
+'    if (!f) {',
+'      break;',
+'    }',
+'',
+'    char line[8192];',
+'    int cur = 0;',
+'    int found = 0;',
+'',
+'    while (fgets(line, sizeof(line), f)) {',
+'      if (cur++ == idx) {',
+'        found = 1;',
+'        char* sep = strchr(line, \'|\');',
+'        if (sep) {',
+'          *sep = 0;',
+'          char* srcP = line;',
+'          char* dstP = sep + 1;',
+'          char* nl = strchr(dstP, \'\\n\');',
+'          if (nl) *nl = 0;',
+'          soul_copy(srcP, dstP);',
+'        }',
+'        break;',
+'      }',
+'    }',
+'    fclose(f);',
+'',
+'    // si el indice no corresponde a ninguna linea real, salir',
+'    if (!found) {',
+'      break;',
+'    }',
+'  }',
+'',
+'  if (soul_worker_id == 0) {',
+'if (soul_progress_action) {',
+'    soul_progress_end(1);',
+'}',
+'  }',
+'',
+'  return 1;',
+'}',            
 
         ];
     }
@@ -1324,7 +1506,7 @@ final class CEmitter
             OpCode::STORE_VAR  => $this->emitStoreVar($ops),
 
             // Arithmetic: OP <aReg> <bReg> <dstReg>
-            OpCode::ADD, OpCode::SUB, OpCode::MUL, OpCode::DIV => $this->emitArith($op, $ops),
+            OpCode::ADD, OpCode::SUB, OpCode::MUL, OpCode::DIV, OpCode::MOD => $this->emitArith($op, $ops),
 
             // Comparisons: CMP_* <aReg> <bReg> <dstReg>
             OpCode::CMP_LT, OpCode::CMP_LE, OpCode::CMP_GT, OpCode::CMP_GE, OpCode::CMP_EQ, OpCode::CMP_NE
@@ -1445,10 +1627,16 @@ final class CEmitter
             OpCode::SUB => '-',
             OpCode::MUL => '*',
             OpCode::DIV => '/',
+            OpCode::MOD => '%',
             default => '+',
         };
 
+        if ($op === OpCode::MOD) {
+            return "  r[$di] = ((int64_t)r[$bi] == 0) ? 0 : (uintptr_t)(((int64_t)r[$ai]) % ((int64_t)r[$bi]));";
+        }
+
         return "  r[$di] = (uintptr_t)(((int64_t)r[$ai]) $cOp ((int64_t)r[$bi]));";
+
     }
 
 
@@ -1487,7 +1675,7 @@ final class CEmitter
         $di = $this->regIndex($dst);
 
         return match ($op) {
-            OpCode::NEG => "  r[$di] = -r[$si];",
+            OpCode::NEG => "  r[$di] = (uintptr_t)(-((int64_t)r[$si]));",
             OpCode::NOT => "  r[$di] = (!r[$si]) ? 1 : 0;",
             default => "  /* TODO unary $op */",
         };
@@ -1534,8 +1722,8 @@ final class CEmitter
             'print', 'printStr',
             'dir_close', 'net_close',
             'move', 'mkdir', 'append', 'copy',
-            'write', 'close', 'remove'
-
+            'write', 'close', 'remove', 'parallelRun', 'parallelWait',
+            'copyFolder',
         ];
 
 
@@ -1546,6 +1734,24 @@ final class CEmitter
             if (!empty($argsOperands) && end($argsOperands) instanceof IrReg) {
                 $dstReg = array_pop($argsOperands);
             }
+        }
+
+        if ($name === 'parallelRun') {
+            if (count($argsOperands) !== 1) return '  /* ERROR: parallelRun expects 1 arg */';
+            $this->assertReg($argsOperands[0], 'CALL_BUILTIN parallelRun');
+            $wi = $this->regIndex($argsOperands[0]);
+            return '  soul_parallel_run((int)r[' . $wi . ']);';
+        }
+
+        if ($name === 'parallelWait') {
+            if (count($argsOperands) !== 1) return '  /* ERROR */';
+            $this->assertReg($argsOperands[0], 'CALL_BUILTIN parallelWait');
+            $wi = $this->regIndex($argsOperands[0]);
+
+            return implode("\n", [
+                '  soul_parallel_wait((int)r[' . $wi . ']);',
+                '  if (soul_worker_id_fn() != 0) _exit(0);'
+            ]);
         }
 
         // Solo implementamos print en fase 1
@@ -1660,7 +1866,8 @@ final class CEmitter
             $ai = $this->regIndex($arg);
             $di = $this->regIndex($dstReg);
             //return "  r[$di] = soul_dir_next(r[$ai]);";
-            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_dir_next(r[$ai]));";
+            return "  { const char* __p = (const char*)soul_dir_next(r[$ai]); r[$di] = (uintptr_t)(__p ? soul_persist_str(__p) : 0); }";
+
         }
 
         if ($name === 'endswith') {
@@ -1876,29 +2083,25 @@ final class CEmitter
         }
 
         if ($name === 'buildstr') {
-            // buildstr(arg1, arg2, ..., argN) → string
             if ($dstReg === null) {
                 return '  /* ERROR: buildstr must return value */';
             }
 
-            // argsOperands contiene N registros -> debemos pasarlos a un array temporal en C
             $di = $this->regIndex($dstReg);
             $argc = count($argsOperands);
 
-            // Construimos el array local C: uintptr_t tmpArgs[N] = { r[a], r[b], ... };
-            $code  = "  { uintptr_t tmpArgs[$argc];\n";
-            
-            foreach ($argsOperands as $i => $arg) {
+            // generar array inline SIEMPRE antes de uso
+            $args = [];
+            foreach ($argsOperands as $arg) {
                 $this->assertReg($arg, 'CALL_BUILTIN buildstr');
-                $ai = $this->regIndex($arg);
-                $code .= "    tmpArgs[$i] = r[$ai];\n";
+                $args[] = 'r[' . $this->regIndex($arg) . ']';
             }
 
-            $code .= "    r[$di] = soul_buildstr($argc, tmpArgs);\n";
-            $code .= "  }";
-
-            return $code;
+            return '  { uintptr_t __tmp[' . $argc . '] = { ' .
+                implode(', ', $args) .
+                ' }; r[' . $di . '] = soul_buildstr(' . $argc . ', __tmp); }';
         }
+
 
         if ($name === 'workerId') {
             if ($dstReg === null) {
