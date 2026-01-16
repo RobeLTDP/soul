@@ -104,7 +104,6 @@ class Parser
             return new BreakStmt();
         }
 
-
         // Asignación: IDENTIFIER '=' expr
         if ($this->check("IDENTIFIER") && $this->checkNext("EQUALS")) {
             $nameTok = $this->advance();
@@ -370,6 +369,9 @@ class Parser
             return new Identifier($this->previous()->value);
         }
 
+        if ($this->match("NULL")) {
+            return new Literal(null, "null");
+        }        
 
         if ($this->match("BOOL")) {
             return new Literal((bool)$this->previous()->value, "bool");

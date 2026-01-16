@@ -85,7 +85,11 @@ final class CEmitter
                     ) {
                         // Nota: cLiteral ya devuelve "..." para strings, pero aquí asignamos a uintptr_t:
                         // el cast se hace en emitLoadConst (ver nota más abajo).
-                        $out[] = '  ' . $this->cVar($var->name) . ' = ' . $this->cLiteral($lit->value) . ';';
+                        if (is_string($lit->value)) {
+                            $out[] = '  ' . $this->cVar($var->name) . ' = (uintptr_t)' . $this->cLiteral($lit->value) . ';';
+                        } else {
+                            $out[] = '  ' . $this->cVar($var->name) . ' = (uintptr_t)' . $this->cLiteral($lit->value) . ';';
+                        }
                         $i++; // saltar STORE_VAR
                         continue;
                     }
@@ -172,7 +176,8 @@ final class CEmitter
                         $b instanceof IrReg &&
                         $dst instanceof IrReg &&
                         $rX->name === $a->name &&
-                        $rY->name === $b->name
+                        $rY->name === $b->name &&
+                        (is_int($lit->value) || is_bool($lit->value) || is_float($lit->value))
                     ) {
                         $cVar = $this->cVar($var->name);
                         $cLit = $this->cLiteral($lit->value);
@@ -192,6 +197,7 @@ final class CEmitter
                         $i += 2;
                         continue;
                     }
+
                 }
             }
 
@@ -308,15 +314,26 @@ final class CEmitter
 '    if (!soul_progress_action) return;',
 '',
 '    uint64_t now = soul_now_ms();',
-'    if (soul_progress_last_ms != 0 && (now - soul_progress_last_ms) < soul_progress_interval_ms) {',
+'    uint64_t elapsed = now - soul_progress_start_ms;',
+'',
+'    // intervalo dinámico según duración',
+'    uint64_t interval = soul_progress_interval_ms;',
+'',
+'    if (elapsed > 10 * 1000) interval = 3000;        // >10s',
+'    if (elapsed > 60 * 1000) interval = 10000;        // >1min',
+'    if (elapsed > 5 * 60 * 1000) interval = 20000;   // >5min',
+'    if (elapsed > 8 * 60 * 1000) interval = 30000;   // >8min',
+'',
+'    if (soul_progress_last_ms != 0 &&',
+'        (now - soul_progress_last_ms) < interval) {',
 '        return;',
 '    }',
 '',
 '    soul_progress_last_ms = now;',
-'    uint64_t elapsed = now - soul_progress_start_ms;',
 '',
-'    dprintf(2, "[%s] working... %" PRIu64 "ms\n", soul_progress_action, elapsed);',
+'    dprintf(2, "[%s] working... %" PRIu64 "ms\\n", soul_progress_action, elapsed);',
 '}',
+
 '',
 'static void soul_progress_end(int ok) {',
 '    if (!soul_progress_action) return;',
@@ -649,46 +666,105 @@ final class CEmitter
             '  return (uintptr_t)out;',
             '}',
             '',
-            'static uintptr_t soul_copy(const char* src, const char* dst) {',
-            '  if (!src || !dst) return 0;',
-            '',
-            '  int in = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY, 0);',
-            '  if (in < 0) return 0;',
-            '',
-            '  int out = (int)syscall(SYS_openat, AT_FDCWD, dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-            '  if (out < 0) {',
-            '    syscall(SYS_close, in);',
-            '    return 0;',
-            '  }',
-            '',
-            '  char buf[1 << 16];',
-            '  for (;;) {',
-            '    long n = syscall(SYS_read, in, buf, sizeof(buf));',
-            '    if (n == 0) break;', 
-            '    if (n < 0) {',
-            '      syscall(SYS_close, in);',
-            '      syscall(SYS_close, out);',
-            '      return 0;',
-            '    }',
-            '',
-            '    char* p = buf;',
-            '    long left = n;',
-            '    while (left > 0) {',
-            '      long w = syscall(SYS_write, out, p, (size_t)left);',
-            '      if (w <= 0) {',
-            '        syscall(SYS_close, in);',
-            '        syscall(SYS_close, out);',
-            '        return 0;',
-            '      }',
-            '      p += w;',
-            '      left -= w;',
-            '    }',
-            '  }',
-            '',
-            '  syscall(SYS_close, in);',
-            '  syscall(SYS_close, out);',
-            '  return 1;',
-            '}',
+'static int soul_copyFolder_depth = 0;',            
+'',
+'static uintptr_t soul_copy(const char* src, const char* dst) {',
+'  if (!src || !dst) return 0;',
+'',
+'  int in = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY, 0);',
+'  if (in < 0) return 0;',
+'',
+'  int out = (int)syscall(SYS_openat, AT_FDCWD, dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+'  if (out < 0) {',
+'    syscall(SYS_close, in);',
+'    return 0;',
+'  }',
+'',
+'  char buf[1 << 16];',
+'  for (;;) {',
+'    long n = syscall(SYS_read, in, buf, sizeof(buf));',
+'    if (n == 0) break;',
+'    if (n < 0) {',
+'      syscall(SYS_close, in);',
+'      syscall(SYS_close, out);',
+'      return 0;',
+'    }',
+'',
+'    // progress durante copia de bloques grandes',
+'    if (soul_copyFolder_depth == 1) {',
+'      soul_progress_tick();',
+'    }',
+'',
+'    char* p = buf;',
+'    long left = n;',
+'    while (left > 0) {',
+'      long w = syscall(SYS_write, out, p, (size_t)left);',
+'      if (w <= 0) {',
+'        syscall(SYS_close, in);',
+'        syscall(SYS_close, out);',
+'        return 0;',
+'      }',
+'      p += w;',
+'      left -= w;',
+'    }',
+'  }',
+'',
+'  syscall(SYS_close, in);',
+'  syscall(SYS_close, out);',
+'  return 1;',
+'}',
+'',
+'static uintptr_t soul_removeTree(const char* path) {',
+'  if (!path || !path[0]) return 0;',
+'',
+'  struct stat st;',
+'  if (lstat(path, &st) != 0) return 0;',
+'',
+'  static int remove_depth = 0;',
+'  remove_depth++;',
+'  int is_root = (remove_depth == 1);',
+'  if (is_root) soul_progress_begin("remove");',
+'',
+'  if (S_ISDIR(st.st_mode)) {',
+'    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_DIRECTORY, 0);',
+'    if (fd >= 0) {',
+'      char buf[1 << 16];',
+'      for (;;) {',
+'        int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+'        if (nread <= 0) break;',
+'',
+'        int bpos = 0;',
+'        while (bpos < nread) {',
+'          if (is_root) soul_progress_tick();',
+'',
+'          struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+'          bpos += d->d_reclen;',
+'',
+'          if (d->d_name[0] == \'.\' &&',
+'              (d->d_name[1] == 0 ||',
+'              (d->d_name[1] == \'.\' && d->d_name[2] == 0))) {',
+'            continue;',
+'          }',
+'',
+'          char child[4096];',
+'          snprintf(child, sizeof(child), "%s/%s", path, d->d_name);',
+'          soul_removeTree(child);',
+'        }',
+'      }',
+'      syscall(SYS_close, fd);',
+'    }',
+'',
+'    syscall(SYS_unlinkat, AT_FDCWD, path, AT_REMOVEDIR);',
+'  } else {',
+'    syscall(SYS_unlinkat, AT_FDCWD, path, 0);',
+'  }',
+'',
+'  remove_depth--;',
+'  if (is_root) soul_progress_end(1);',
+'',
+'  return 1;',
+'}',
+'',
             'static uintptr_t soul_append(const char* path, const char* text) {',
             '    if (!path || !text) return 0;',
             '',
@@ -828,14 +904,19 @@ final class CEmitter
 'static uintptr_t soul_isfile(uintptr_t p) {',
 '    struct stat* st = (struct stat*)p;',
 '    if (!st) return 0;',
-'    return S_ISREG(st->st_mode) ? 1 : 0;',
+'    int r = S_ISREG(st->st_mode) ? 1 : 0;',
+'    soul_stat_free(p);',
+'    return (uintptr_t)r;',
 '}',
 '',
 'static uintptr_t soul_isdir(uintptr_t p) {',
 '    struct stat* st = (struct stat*)p;',
 '    if (!st) return 0;',
-'    return S_ISDIR(st->st_mode) ? 1 : 0;',
+'    int r = S_ISDIR(st->st_mode) ? 1 : 0;',
+'    soul_stat_free(p);',
+'    return (uintptr_t)r;',
 '}',
+'',
 'static uintptr_t soul_dir_next(uintptr_t h) {',
 '  if (h == 0) return (uintptr_t)0;',
 '  int idx = (int)h - 1;',
@@ -928,6 +1009,8 @@ final class CEmitter
 '// --------------------------------------------------',
 '// Parallel workers (for future parallel execution)',
 '// --------------------------------------------------',
+'#include <sys/types.h>',
+'#include <sys/wait.h>',
 '#include <stdlib.h>',
 '',
 'static int soul_worker_id = 0;',
@@ -953,17 +1036,75 @@ final class CEmitter
 '    return (uintptr_t)soul_worker_count;',
 '}',
 '',
+'static void soul_parallel_run(int workers) {',
+'    if (workers <= 1) return;',
+'',
+'    // Si ya vienes con env vars, no lances hijos otra vez',
+'    soul_worker_init();',
+'    if (soul_worker_count > 1) return;',
+'',
+'    // Parent (worker 0) lanza N-1 hijos',
+'    for (int i = 1; i < workers; i++) {',
+'        pid_t pid = fork();',
+'        if (pid == 0) {',
+'            // Child: set env and continue execution',
+'            char sid[16], sc[16];',
+'            snprintf(sid, sizeof(sid), "%d", i);',
+'            snprintf(sc,  sizeof(sc),  "%d", workers);',
+'            setenv("SOUL_WORKER_ID", sid, 1);',
+'            setenv("SOUL_WORKER_COUNT", sc, 1);',
+'            soul_worker_inited = 0;',
+'            soul_worker_init();',
+'            return; // el hijo vuelve y ejecuta el bloque',
+'        }',
+'    }',
+'',
+'    // Parent se queda con worker 0',
+'    {',
+'        char sid[16], sc[16];',
+'        snprintf(sid, sizeof(sid), "%d", 0);',
+'        snprintf(sc,  sizeof(sc),  "%d", workers);',
+'        setenv("SOUL_WORKER_ID", sid, 1);',
+'        setenv("SOUL_WORKER_COUNT", sc, 1);',
+'        soul_worker_inited = 0;',
+'        soul_worker_init();',
+'    }',
+'}',
+'',
+'static void soul_parallel_wait(int workers) {',
+'    soul_worker_init();',
+'    if (soul_worker_id != 0) return; // solo espera el padre',
+'    if (workers <= 1) return;',
+'',
+'    for (int i = 1; i < workers; i++) {',
+'        int status = 0;',
+'        wait(&status);',
+'    }',
+'}',
+'',
 'static uintptr_t soul_copyFolder(const char* src, const char* dst) {',
 '  if (!src || !dst) return 0;',
 '',
+'  soul_copyFolder_depth++;',
+'  int is_root = (soul_copyFolder_depth == 1 && soul_worker_id == 0);',
+'  if (is_root) soul_progress_begin("copy");',
+'',
 '  struct stat st;',
-'  if (stat(src, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;',
+'  if (stat(src, &st) != 0 || !S_ISDIR(st.st_mode)) {',
+'    soul_copyFolder_depth--;',
+'    if (is_root) soul_progress_end(0);',
+'    return 0;',
+'  }',
 '',
 '  // crear destino si no existe',
 '  syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
 '',
 '  int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
-'  if (fd < 0) return 0;',
+'  if (fd < 0) {',
+'    soul_copyFolder_depth--;',
+'    if (is_root) soul_progress_end(0);',
+'    return 0;',
+'  }',
 '',
 '  char buf[1 << 16];',
 '',
@@ -973,6 +1114,8 @@ final class CEmitter
 '',
 '    int bpos = 0;',
 '    while (bpos < nread) {',
+'      if (is_root) soul_progress_tick();',
+'',
 '      struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
 '      bpos += d->d_reclen;',
 '',
@@ -999,9 +1142,14 @@ final class CEmitter
 '  }',
 '',
 '  syscall(SYS_close, fd);',
+'',
+'  soul_copyFolder_depth--;',
+'  if (is_root) soul_progress_end(1);',
+'',
 '  return 1;',
 '}',
 '',
+
 
             '// IPv4: "A.B.C.D" -> uint32 (network order)',
             'static uint32_t soul_inet_addr(const char* s) {',
@@ -1235,7 +1383,7 @@ final class CEmitter
             OpCode::STORE_VAR  => $this->emitStoreVar($ops),
 
             // Arithmetic: OP <aReg> <bReg> <dstReg>
-            OpCode::ADD, OpCode::SUB, OpCode::MUL, OpCode::DIV => $this->emitArith($op, $ops),
+            OpCode::ADD, OpCode::SUB, OpCode::MUL, OpCode::DIV, OpCode::MOD => $this->emitArith($op, $ops),
 
             // Comparisons: CMP_* <aReg> <bReg> <dstReg>
             OpCode::CMP_LT, OpCode::CMP_LE, OpCode::CMP_GT, OpCode::CMP_GE, OpCode::CMP_EQ, OpCode::CMP_NE
@@ -1356,10 +1504,16 @@ final class CEmitter
             OpCode::SUB => '-',
             OpCode::MUL => '*',
             OpCode::DIV => '/',
+            OpCode::MOD => '%',
             default => '+',
         };
 
+        if ($op === OpCode::MOD) {
+            return "  r[$di] = ((int64_t)r[$bi] == 0) ? 0 : (uintptr_t)(((int64_t)r[$ai]) % ((int64_t)r[$bi]));";
+        }
+
         return "  r[$di] = (uintptr_t)(((int64_t)r[$ai]) $cOp ((int64_t)r[$bi]));";
+
     }
 
 
@@ -1398,7 +1552,7 @@ final class CEmitter
         $di = $this->regIndex($dst);
 
         return match ($op) {
-            OpCode::NEG => "  r[$di] = -r[$si];",
+            OpCode::NEG => "  r[$di] = (uintptr_t)(-((int64_t)r[$si]));",
             OpCode::NOT => "  r[$di] = (!r[$si]) ? 1 : 0;",
             default => "  /* TODO unary $op */",
         };
@@ -1445,8 +1599,8 @@ final class CEmitter
             'print', 'printStr',
             'dir_close', 'net_close',
             'move', 'mkdir', 'append', 'copy',
-            'write', 'close', 'remove'
-
+            'write', 'close', 'remove', 'parallelRun', 'parallelWait',
+            'copyFolder',
         ];
 
 
@@ -1458,6 +1612,22 @@ final class CEmitter
                 $dstReg = array_pop($argsOperands);
             }
         }
+
+        if ($name === 'parallelRun') {
+            if (count($argsOperands) !== 1) return '  /* ERROR: parallelRun expects 1 arg */';
+            $this->assertReg($argsOperands[0], 'CALL_BUILTIN parallelRun');
+            $wi = $this->regIndex($argsOperands[0]);
+            return '  soul_parallel_run((int)r[' . $wi . ']);';
+        }
+
+        if ($name === 'parallelWait') {
+            if (count($argsOperands) !== 1) return '  /* ERROR: parallelWait expects 1 arg */';
+            $this->assertReg($argsOperands[0], 'CALL_BUILTIN parallelWait');
+            $wi = $this->regIndex($argsOperands[0]);
+            return '  soul_parallel_wait((int)r[' . $wi . ']);';
+        }
+
+
 
         // Solo implementamos print en fase 1
         if ($name === 'print') {
@@ -1571,7 +1741,8 @@ final class CEmitter
             $ai = $this->regIndex($arg);
             $di = $this->regIndex($dstReg);
             //return "  r[$di] = soul_dir_next(r[$ai]);";
-            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_dir_next(r[$ai]));";
+            return "  { const char* __p = (const char*)soul_dir_next(r[$ai]); r[$di] = (uintptr_t)(__p ? soul_persist_str(__p) : 0); }";
+
         }
 
         if ($name === 'endswith') {
@@ -1894,6 +2065,24 @@ final class CEmitter
             return "  r[$di] = soul_isdir(r[$si]);";
         }
 
+        if ($name === 'removeTree') {
+            if (count($argsOperands) !== 1) {
+                return '  /* ERROR: removeTree expects 1 arg */';
+            }
+
+            [$path] = $argsOperands;
+            $this->assertReg($path, 'CALL_BUILTIN removeTree');
+            $pi = $this->regIndex($path);
+
+            if ($dstReg !== null) {
+                $di = $this->regIndex($dstReg);
+                return "  r[$di] = soul_removeTree((const char*)r[$pi]);";
+            }
+
+            return "  soul_removeTree((const char*)r[$pi]);";
+        }
+
+
         if ($name === 'http_get') {
             // http_get(ip, port, path) -> netconn
             if (count($argsOperands) !== 3 || $dstReg === null) {
@@ -2069,10 +2258,8 @@ final class CEmitter
                 'stat','isfile','isdir','http_get', 'net_read', 'net_close',
                 'open','write','close', 'remove', 'mtime', 'buildstr',
                 'workerId', 'workerCount', 'atomicCounter', 'atomicAppend',
-                'argc', 'argv', 'arg', 'toStr', 'toInt',
+                'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree'
             ], true)) return true;
-
-
 
         }
         return false;

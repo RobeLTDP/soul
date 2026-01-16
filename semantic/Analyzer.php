@@ -328,8 +328,7 @@ class Analyzer
     // -----------------------------
 
     private function analyzeCall(CallExpr $call): ?string
-    {
-        // versión mínima
+    {        
         $builtins = [
 
             // FS core
@@ -346,11 +345,12 @@ class Analyzer
             "mtime"    => "int",
 
             // Dir iteration
-            "listdir"   => "diriter",
-            "dir_next"  => "str",
-            "dir_close" => "void",
-            "rmdir"     => "bool",
-            "copyFolder"  => "bool",
+            "listdir"    => "diriter",
+            "dir_next"   => "str",
+            "dir_close"  => "void",
+            "rmdir"      => "bool",
+            "copyFolder" => "bool",
+            "backup"     => "bool",
 
             // Strings
             "concat"     => "str",

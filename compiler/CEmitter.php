@@ -17,7 +17,7 @@ final class CEmitter
     public function emit(IrProgram $program, string $functionName = 'main'): string
     {
         // Recolectar registros usados (r0, r1...) y variables ($i, etc.)
-        [$regs, $vars] = $this->collectSymbols($program);
+        [$regs, $vars] = $this->collectSymbols($program);        
 
         $out = [];
         $out[] = '#include <stdio.h>';
@@ -51,6 +51,7 @@ final class CEmitter
         // Registros: palabra máquina (sirve para enteros y punteros, estilo "reg")
         $maxReg = $this->maxRegIndex($regs);
         $out[] = '  uintptr_t r[' . ($maxReg + 1) . '];';
+        $out[] = '  memset(r, 0, sizeof(r));';
 
         // Variables: igual, palabra máquina (path/str necesitan puntero)
         foreach (array_keys($vars) as $v) {
@@ -62,9 +63,22 @@ final class CEmitter
         // Emitir instrucciones (con peephole simple)
         $insts = $program->instructions;
         $cnt = count($insts);
+        $usesParallel = $this->programUsesParallel($program);
+        $openHandleVars = $this->collectOpenHandleVars($program);
+
 
         for ($i = 0; $i < $cnt; $i++) {
             $inst = $insts[$i];
+
+            // --------------------------------------------------
+            // Strip implicit worker guard for non-parallel programs
+            // --------------------------------------------------
+            if (!$usesParallel && $inst->opCode === OpCode::CALL_BUILTIN) {
+                $nameOp = $inst->operands[0] ?? null;
+                if ($nameOp instanceof IrLit && $nameOp->value === 'workerId') {
+                    continue; // IGNORAR workerId fuera de paralelismo
+                }
+            }            
 
             // --------------------------------------------------
             // Peephole 1: LOAD_CONST + STORE_VAR
@@ -244,7 +258,9 @@ final class CEmitter
             }
 
             // Fallback normal
-            $line = $this->emitInstruction($inst);
+            //$line = $this->emitInstruction($program, $inst);
+            $line = $this->emitInstruction($program, $inst, $i, $openHandleVars);
+
             if ($line !== '') {
                 $out[] = $line;
             }
@@ -373,6 +389,7 @@ final class CEmitter
             '  int fd;',
             '  int nread;',
             '  int bpos;',
+            '  int finished; ',
             '  char buf[1 << 16];',
             '} dir_iter_t;',
             '',
@@ -392,6 +409,7 @@ final class CEmitter
             '      iters[i].fd = fd;',
             '      iters[i].nread = 0;',
             '      iters[i].bpos = 0;',
+            '      iters[i].finished = 0;',
             '      return (uintptr_t)(i + 1);',
             '    }',
             '  }',
@@ -589,6 +607,7 @@ final class CEmitter
 '',
 '    int len = 0;',
 '    while (s[len]) len++;',
+'   if (len == 0) return "";',
 '',
 '    // Si no cabe, devolvemos el string original (fallback seguro)',
 '    if (len + 1 > SOUL_STR_POOL_SIZE) return s;',
@@ -859,7 +878,16 @@ final class CEmitter
         '  w->used = 0;',
         '}',
         '',
-            
+        '// write(path, text) convenience: open + write + close',
+        'static uintptr_t soul_write_file(const char* path, const char* text) {',
+        '  if (!path || !text) return 0;',
+        '  uintptr_t h = soul_open(path);',
+        '  if (!h) return 0;',
+        '  soul_write(h, text);',
+        '  soul_close(h);',
+        '  return 1;',
+        '}',
+        '',            
             
             'static uintptr_t soul_mkdir(const char* path) {',
             '  if (!path) return 0;',
@@ -918,16 +946,26 @@ final class CEmitter
 '',
 'static uintptr_t soul_dir_next(uintptr_t h) {',
 '  if (h == 0) return (uintptr_t)0;',
+'',
 '  int idx = (int)h - 1;',
 '  if (idx < 0 || idx >= 8) return (uintptr_t)0;',
+'',
 '  dir_iter_t* it = &iters[idx];',
 '  if (it->fd < 0) return (uintptr_t)0;',
+'',
+'  // si el iterador ya terminó',
+'  if (it->finished) {',
+'    return (uintptr_t)0;',
+'  }',
 '',
 '  for (;;) {',
 '    if (it->bpos >= it->nread) {',
 '      it->nread = (int)syscall(SYS_getdents64, it->fd, it->buf, sizeof(it->buf));',
 '      it->bpos = 0;',
+'',
+'      // EOF real',
 '      if (it->nread <= 0) {',
+'        it->finished = 1;',
 '        return (uintptr_t)0;',
 '      }',
 '    }',
@@ -935,29 +973,31 @@ final class CEmitter
 '    struct linux_dirent64* d = (struct linux_dirent64*)(it->buf + it->bpos);',
 '    it->bpos += d->d_reclen;',
 '',
-"    if (d->d_name[0] == '.' && (d->d_name[1] == 0 || (d->d_name[1] == '.' && d->d_name[2] == 0))) {",
+'    // saltar "." y ".."',
+'    if (d->d_name[0] == \'.\' &&',
+'        (d->d_name[1] == 0 ||',
+'        (d->d_name[1] == \'.\' && d->d_name[2] == 0))) {',
 '      continue;',
 '    }',
 '',
 '    if (d->d_reclen == 0) {',
+'      it->finished = 1;',
 '      return (uintptr_t)0;',
 '    }',
 '',
-'char* out = dir_name_bufs[dir_name_idx++ & 15];',
+'    char* out = dir_name_bufs[dir_name_idx++ & 15];',
 '',
-'// copiar nombre',
-'int i = 0;',
-'while (d->d_name[i] && i < MAX_DIRENT_NAME - 1) {',
-'    out[i] = d->d_name[i];',
-'    i++;',
-'}',
-'out[i] = 0;',
+'    int i = 0;',
+'    while (d->d_name[i] && i < MAX_DIRENT_NAME - 1) {',
+'      out[i] = d->d_name[i];',
+'      i++;',
+'    }',
+'    out[i] = 0;',
 '',
-'return (uintptr_t)out;',
+'    return (uintptr_t)out;',
 '  }',
 '}',
-'',
-            
+
 
 
             'static void soul_dir_close(uintptr_t h) {',
@@ -1111,9 +1151,157 @@ final class CEmitter
 '    }',
 '}',
 '',
+            'static char soul_copy_list_path[256];',  
+            'static char soul_backup_log_path[256];',       
+            'static int soul_backup_depth = 0;',
+            'static char soul_backup_root_dst[4096];',            
 'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst);',
 'static uintptr_t soul_copyFolder(const char* src, const char* dst) {',
 '  return soul_copyFolder_parallel(src, dst);',
+'}',
+'static void soul_now_iso(char* buf, size_t sz) {',
+'    struct timespec ts;',
+'    clock_gettime(CLOCK_REALTIME, &ts);',
+'',
+'    struct tm tm;',
+'    localtime_r(&ts.tv_sec, &tm);',
+'',
+'    snprintf(',
+'        buf, sz,',
+'        "%04d-%02d-%02dT%02d:%02d:%02d",',
+'        tm.tm_year + 1900,',
+'        tm.tm_mon + 1,',
+'        tm.tm_mday,',
+'        tm.tm_hour,',
+'        tm.tm_min,',
+'        tm.tm_sec',
+'    );',
+'}',
+'static uintptr_t soul_atomic_append(const char* path, const char* text);',
+'static uintptr_t soul_backupFolder(const char* src, const char* dst) {',
+'',
+'    // inicialización SOLO en la llamada raíz',
+'    if (soul_backup_depth == 0) {',
+'        snprintf(',
+'            soul_backup_root_dst,',
+'            sizeof(soul_backup_root_dst),',
+'            "%s",',
+'            dst',
+'        );',
+'',
+'        snprintf(',
+'            soul_backup_log_path,',
+'            sizeof(soul_backup_log_path),',
+'            "%s/.soul_backup.log",',
+'            soul_backup_root_dst',
+'        );',
+'if (soul_worker_id == 0) {',
+'    char ts[64];',
+'    char hdr[512];',
+'    soul_now_iso(ts, sizeof(ts));',
+'',
+'    snprintf(',
+'        hdr, sizeof(hdr),',
+'        "\\n========================================\\n"',
+'        "BACKUP START %s\\n"',
+'        "SRC: %s\\n"',
+'        "DST: %s\\n"',
+'        "----------------------------------------\\n",',
+'        ts, src, dst',
+'    );',
+'',
+'    soul_atomic_append(soul_backup_log_path, hdr);',
+'}',
+'    }',
+'',
+'    soul_backup_depth++;',
+'',
+'    soul_worker_init();',
+
+'',
+'    struct stat stSrc;',
+'    struct stat stDst;',
+'',
+'    if (stat(src, &stSrc) != 0) return 0;',
+'',
+'    if (S_ISDIR(stSrc.st_mode)) {',
+'        syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
+'',
+'        int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
+'        if (fd < 0) return 0;',
+'',
+'        char buf[1 << 16];',
+'        for (;;) {',
+'            int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+'            if (nread <= 0) break;',
+'',
+'            int bpos = 0;',
+'            while (bpos < nread) {',
+'                struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+'                bpos += d->d_reclen;',
+'',
+'                if (d->d_name[0] == \'.\' &&',
+'                   (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
+'                    continue;',
+'',
+'                char srcPath[4096];',
+'                char dstPath[4096];',
+'                snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
+'                snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
+'',
+'                soul_backupFolder(srcPath, dstPath);',
+'            }',
+'        }',
+'        syscall(SYS_close, fd);',
+'        soul_backup_depth--;',
+'if (soul_backup_depth == 0 && soul_worker_id == 0) {',
+'    char ts[64];',
+'    char ftr[256];',
+'    soul_now_iso(ts, sizeof(ts));',
+'',
+'    snprintf(',
+'        ftr, sizeof(ftr),',
+'        "----------------------------------------\\n"',
+'        "BACKUP END   %s\\n"',
+'        "========================================\\n"',
+'        , ts',
+'    );',
+'',
+'    soul_atomic_append(soul_backup_log_path, ftr);',
+'}',
+'        return 1;',
+'    }',
+'',
+'if (S_ISREG(stSrc.st_mode)) {',
+'    int needCopy = 0;',
+'',
+'    if (stat(dst, &stDst) != 0) {',
+'        needCopy = 1;', 
+'    } else if (stSrc.st_mtime > stDst.st_mtime || stSrc.st_size != stDst.st_size) {',
+'        needCopy = 1;',
+'    }',
+'',
+'    if (needCopy) {',
+'        soul_copy(src, dst);',
+'',
+'        char logLine[1024];',
+'        snprintf(',
+'            logLine,',
+'            sizeof(logLine),',
+'            "UPDATED %s -> %s\n",',
+'            src,',
+'            dst',
+'        );',
+'        soul_atomic_append(soul_backup_log_path, logLine);',
+'    }',
+'',
+'    soul_backup_depth--;',
+'    return 1;',
+'}',
+'',
+'// fallback: no es dir ni fichero regular',
+'soul_backup_depth--;',
+'return 1;',
 '}',
 '',
             '// IPv4: "A.B.C.D" -> uint32 (network order)',
@@ -1316,9 +1504,7 @@ final class CEmitter
             '    syscall(SYS_close, fd);',
             '',
             '    return (w == (long)len) ? 1 : 0;',
-            '}',
-            '',
-            'static char soul_copy_list_path[256];',            
+            '}',   
             '',
             'static int64_t soul_copy_total_files = 0;',
 'static void soul_copy_collect(const char* src, const char* dst) {',
@@ -1375,21 +1561,35 @@ final class CEmitter
 '  );',
 '',
 '  if (soul_worker_id == 0) {',
+'',
+'    // CREAR LISTA VACÍA ANTES DEL SCAN (evita estado residual)',
+'    {',
+'      int fd = (int)syscall(',
+'        SYS_openat,',
+'        AT_FDCWD,',
+'        soul_copy_list_path,',
+'        O_WRONLY | O_CREAT | O_TRUNC,',
+'        0644',
+'      );',
+'      if (fd >= 0) syscall(SYS_close, fd);',
+'    }',
+'',
 '    soul_progress_begin("scan");',
-'soul_copy_total_files = 0;',
-'soul_copy_collect(src, dst);',
+'    soul_copy_total_files = 0;',
+'    soul_copy_collect(src, dst);',
 '',
-'// guardar total en fichero',
-'char metaPath[256];',
-'snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
-'FILE* mf = fopen(metaPath, "w");',
-'if (mf) {',
-'    fprintf(mf, "%lld\n", (long long)soul_copy_total_files);',
-'    fclose(mf);',
-'}',
+'    // guardar total en fichero',
+'    char metaPath[256];',
+'    snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+'    FILE* mf = fopen(metaPath, "w");',
+'    if (mf) {',
+'        fprintf(mf, "%lld\\n", (long long)soul_copy_total_files);',
+'        fclose(mf);',
+'    }',
 '',
-'soul_progress_end(1);',
+'    soul_progress_end(1);',
 '  }',
+
 '',
 '  while (access(soul_copy_list_path, F_OK) != 0) {',
 '    usleep(1000);',
@@ -1487,7 +1687,7 @@ final class CEmitter
     // Instruction emission
     // --------------------------------------------------
 
-    private function emitInstruction(IrInstruction $inst): string
+    private function emitInstruction(IrProgram $program, IrInstruction $inst, int $ip, array $openHandleVars): string
     {
         $op = $inst->opCode;
         $ops = $inst->operands;
@@ -1525,7 +1725,8 @@ final class CEmitter
             OpCode::JMP_IF_FALSE => $this->emitJmpIfFalse($ops),
 
             // CALL_BUILTIN <lit(name)> <argReg>* [<dstReg>]
-            OpCode::CALL_BUILTIN => $this->emitCallBuiltin($ops),
+            //OpCode::CALL_BUILTIN => $this->emitCallBuiltin($ops),
+            OpCode::CALL_BUILTIN => $this->emitCallBuiltin($program, $ops, $ip, $openHandleVars),
 
             // EXIT [<exitCodeReg>]
             OpCode::EXIT => $this->emitExit($ops),
@@ -1705,7 +1906,7 @@ final class CEmitter
         return '  if (!r[' . $ci . ']) goto ' . $label->name . ';';
     }
 
-    private function emitCallBuiltin(array $ops): string
+    private function emitCallBuiltin(IrProgram $program, array $ops, int $ip, array $openHandleVars): string
     {
         // CALL_BUILTIN <lit(name)> <argReg>* [<dstReg>]
         $nameOp = $ops[0] ?? null;
@@ -1715,26 +1916,51 @@ final class CEmitter
         if (!is_string($name)) {
             return '  /* ERROR: builtin name not string */';
         }
+        
 
-        $argsOperands = array_slice($ops, 1);
 
         $voidBuiltins = [
             'print', 'printStr',
             'dir_close', 'net_close',
-            'move', 'mkdir', 'append', 'copy',
+            'move', 'append', 'copy',
             'write', 'close', 'remove', 'parallelRun', 'parallelWait',
-            'copyFolder',
+            'copyFolder', 'backup',
         ];
 
 
+        $argsOperands = array_slice($ops, 1);
 
         $dstReg = null;
 
-        if (!in_array($name, $voidBuiltins, true)) {
-            if (!empty($argsOperands) && end($argsOperands) instanceof IrReg) {
+        // dst SOLO existe si el IR tiene más de:
+        // 1 (nombre) + N argumentos
+        // Es decir: si hay AL MENOS 3 operandos
+        if (!in_array($name, $voidBuiltins, true) && count($ops) >= 3) {
+            $last = end($argsOperands);
+            if ($last instanceof IrReg) {
                 $dstReg = array_pop($argsOperands);
             }
         }
+
+        if ($name === 'mkdir') {
+            if (count($argsOperands) !== 1) {
+                throw new RuntimeException(
+                    "CEmitter: builtin mkdir expects 1 arg, got " . count($argsOperands)
+                );
+            }
+
+            $path = $argsOperands[0];
+            $this->assertReg($path, 'CALL_BUILTIN mkdir');
+            $pi = $this->regIndex($path);
+
+            if ($dstReg !== null) {
+                $ri = $this->regIndex($dstReg);
+                return "  r[$ri] = soul_mkdir((const char*)r[$pi]);";
+            }
+
+            return "  soul_mkdir((const char*)r[$pi]);";
+        }
+
 
         if ($name === 'parallelRun') {
             if (count($argsOperands) !== 1) return '  /* ERROR: parallelRun expects 1 arg */';
@@ -1753,20 +1979,14 @@ final class CEmitter
                 '  if (soul_worker_id_fn() != 0) _exit(0);'
             ]);
         }
-
-        // Solo implementamos print en fase 1
-        if ($name === 'print') {
-            // print(x): por ahora imprimimos como int64
-            if (count($argsOperands) !== 1) {
-                return '  /* ERROR: print expects 1 arg */';
-            }
-            $arg = $argsOperands[0];
-            $this->assertReg($arg, 'CALL_BUILTIN print');
-            $ai = $this->regIndex($arg);
-
-            // printf("%lld\n", (long long)r[ai]);
-            return '  printf("%lld\\n", (long long)r[' . $ai . ']);';
-        }
+        
+if ($name === 'print') {
+    if (count($argsOperands) !== 1) return '  /* ERROR: print expects 1 arg */';
+    $arg = $argsOperands[0];
+    $this->assertReg($arg, 'CALL_BUILTIN print');
+    $ai = $this->regIndex($arg);
+    return '  printf("%lld\\n", (long long)(int64_t)r['.$ai.']);';
+}
 
         if ($name === 'printStr') {
             if (count($argsOperands) !== 1) {
@@ -1811,24 +2031,22 @@ final class CEmitter
 
         }
 
+if ($name === 'join') {
+    if (count($argsOperands) !== 2 || $dstReg === null) {
+        return '  /* ERROR: join expects 2 args and returns value */';
+    }
 
-        if ($name === 'join') {
-            if (count($argsOperands) !== 2 || $dstReg === null) {
-                return '  /* ERROR: join expects 2 args and returns value */';
-            }
+    [$a, $b] = $argsOperands;
+    $this->assertReg($a, 'CALL_BUILTIN join');
+    $this->assertReg($b, 'CALL_BUILTIN join');
 
-            [$a, $b] = $argsOperands;
-            $this->assertReg($a, 'CALL_BUILTIN join');
-            $this->assertReg($b, 'CALL_BUILTIN join');
+    $ai = $this->regIndex($a);
+    $bi = $this->regIndex($b);
+    $di = $this->regIndex($dstReg);
 
-            $ai = $this->regIndex($a);
-            $bi = $this->regIndex($b);
-            $di = $this->regIndex($dstReg);
-
-            //return "  r[$di] = soul_concat((const char*)r[$ai], (const char*)r[$bi]);";
-            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_concat((const char*)r[$ai], (const char*)r[$bi]));";
-
-        }
+    // join() DEBE ser path join con "/"
+    return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_path_join((const char*)r[$ai], (const char*)r[$bi]));";
+}
 
         if ($name === 'rmdir') {
             if (count($argsOperands) !== 1) {
@@ -1847,7 +2065,6 @@ final class CEmitter
             return "  soul_rmdir((const char*)r[$pi]);";
         }
 
-
         if ($name === 'listdir') {
             if (count($argsOperands) !== 1 || $dstReg === null) {
                 return '  /* ERROR: listdir expects 1 arg and returns handle */';
@@ -1865,8 +2082,11 @@ final class CEmitter
             $arg = $argsOperands[0]; $this->assertReg($arg, 'CALL_BUILTIN dir_next');
             $ai = $this->regIndex($arg);
             $di = $this->regIndex($dstReg);
-            //return "  r[$di] = soul_dir_next(r[$ai]);";
-            return "  { const char* __p = (const char*)soul_dir_next(r[$ai]); r[$di] = (uintptr_t)(__p ? soul_persist_str(__p) : 0); }";
+            //return "  r[$di] = soul_dir_next(r[$ai]);";            
+            //return "  { const char* __p = (const char*)soul_dir_next(r[$ai]); if (!__p || __p[0] == 0) { r[$di] = (uintptr_t)\"\"; } else { r[$di] = (uintptr_t)soul_persist_str(__p); } }";
+            return "  { const char* __p = (const char*)soul_dir_next(r[$ai]); if (!__p || __p[0] == 0) { r[$di] = (uintptr_t)0; } else { r[$di] = (uintptr_t)soul_persist_str(__p); } }";
+
+
 
         }
 
@@ -1900,7 +2120,6 @@ final class CEmitter
             return "  r[$di] = soul_mtime((const char*)r[$pi]);";
         }
 
-
         if ($name === 'remove') {
             if (count($argsOperands) !== 1) {
                 return '  /* ERROR: remove expects 1 arg */';
@@ -1932,7 +2151,6 @@ final class CEmitter
 
             return "  r[$di] = soul_to_int((const char*)r[$vi]);";
         }        
-
 
         if ($name === 'startswith') {
             if (count($argsOperands) !== 2 || $dstReg === null) {
@@ -1999,7 +2217,8 @@ final class CEmitter
             $di = $this->regIndex($dstReg);
 
             //return "  r[$di] = soul_path_join((const char*)r[$ai], (const char*)r[$bi]);";
-            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_path_join((const char*)r[$ai], (const char*)r[$bi]));";
+            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_concat((const char*)r[$ai], (const char*)r[$bi]));";
+
 
         }
 
@@ -2046,6 +2265,7 @@ final class CEmitter
             $di = $this->regIndex($dstReg);
             return "  r[$di] = soul_argc_fn();";
         }
+
         if ($name === 'argv') {
             if (count($argsOperands) !== 1 || $dstReg === null) {
                 return '  /* ERROR: argv expects 1 arg and returns str */';
@@ -2059,6 +2279,7 @@ final class CEmitter
 
             return "  r[$di] = soul_argv_fn((int64_t)r[$ii]);";
         }
+
         if ($name === 'arg') {
             $argc = count($argsOperands);
 
@@ -2101,7 +2322,6 @@ final class CEmitter
                 implode(', ', $args) .
                 ' }; r[' . $di . '] = soul_buildstr(' . $argc . ', __tmp); }';
         }
-
 
         if ($name === 'workerId') {
             if ($dstReg === null) {
@@ -2155,8 +2375,6 @@ final class CEmitter
 
             return "  soul_atomic_append((const char*)r[$pi], (const char*)r[$ti]);";
         }
-
-
         
         if ($name === 'isfile') {
             if (count($argsOperands) !== 1 || $dstReg === null) {
@@ -2202,7 +2420,6 @@ final class CEmitter
 
             return "  soul_removeTree((const char*)r[$pi]);";
         }
-
 
         if ($name === 'http_get') {
             // http_get(ip, port, path) -> netconn
@@ -2256,44 +2473,62 @@ final class CEmitter
             return "  soul_net_close(r[$ci]);";
         }
 
-        
-        if ($name === 'mkdir') {
-            if (count($argsOperands) !== 1) {
-                return '  /* ERROR: mkdir expects 1 arg */';
+        if ($name === 'write') {
+            if (count($argsOperands) !== 2) {
+                throw new RuntimeException("CEmitter: builtin write expects 2 args, got " . count($argsOperands));
             }
 
-            $arg = $argsOperands[0];
-            $this->assertReg($arg, 'CALL_BUILTIN mkdir');
-            $ai = $this->regIndex($arg);
+            [$a0, $text] = $argsOperands;
+            $this->assertReg($a0, 'CALL_BUILTIN write');
+            $this->assertReg($text, 'CALL_BUILTIN write');
 
+            $a0i = $this->regIndex($a0);
+            $ti  = $this->regIndex($text);
+
+            // Caso A: write(fd, text)  -> soul_write(fd, text)
+            if ($this->regIsWriteHandle($program, $ip, $a0, $openHandleVars)) {
+                if ($dstReg !== null) {
+                    // soul_write no devuelve bool; si el IR espera valor, devuelve 1 "OK" por convenio.
+                    $di = $this->regIndex($dstReg);
+                    return implode("\n", [
+                        "  soul_write(r[$a0i], (const char*)r[$ti]);",
+                        "  r[$di] = 1;"
+                    ]);
+                }
+
+                return "  soul_write(r[$a0i], (const char*)r[$ti]);";
+            }
+
+            // Caso B: write(path, text) -> soul_write_file(path, text)
             if ($dstReg !== null) {
-                $ri = $this->regIndex($dstReg);
-                return "  r[$ri] = soul_mkdir((const char*)r[$ai]);";
+                $di = $this->regIndex($dstReg);
+                return "  r[$di] = soul_write_file((const char*)r[$a0i], (const char*)r[$ti]);";
             }
 
-            return "  soul_mkdir((const char*)r[$ai]);";
+            return "  soul_write_file((const char*)r[$a0i], (const char*)r[$ti]);";
         }
 
+
         if ($name === 'open') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                throw new RuntimeException("CEmitter: builtin open expects 1 arg and returns handle");
+            }
             [$path] = $argsOperands;
+            $this->assertReg($path, 'CALL_BUILTIN open');
             $pi = $this->regIndex($path);
             $di = $this->regIndex($dstReg);
             return "  r[$di] = soul_open((const char*)r[$pi]);";
         }
 
-        if ($name === 'write') {
-            [$h, $text] = $argsOperands;
-            $hi = $this->regIndex($h);
-            $ti = $this->regIndex($text);
-            return "  soul_write(r[$hi], (const char*)r[$ti]);";
-        }
-
         if ($name === 'close') {
+            if (count($argsOperands) !== 1) {
+                throw new RuntimeException("CEmitter: builtin close expects 1 arg");
+            }
             [$h] = $argsOperands;
+            $this->assertReg($h, 'CALL_BUILTIN close');
             $hi = $this->regIndex($h);
             return "  soul_close(r[$hi]);";
-        }        
-
+        }   
 
         if ($name === 'copy') {
             if (count($argsOperands) !== 2) {
@@ -2336,6 +2571,26 @@ final class CEmitter
             return "  soul_copyFolder((const char*)r[$si], (const char*)r[$di]);";
         }        
 
+        if ($name === 'backup') {
+            if (count($argsOperands) !== 2) {
+                return '  /* ERROR: backup expects 2 args */';
+            }
+
+            [$src, $dst] = $argsOperands;
+            $this->assertReg($src, 'CALL_BUILTIN backup');
+            $this->assertReg($dst, 'CALL_BUILTIN backup');
+
+            $si = $this->regIndex($src);
+            $di = $this->regIndex($dst);
+
+            if ($dstReg !== null) {
+                $ri = $this->regIndex($dstReg);
+                return "  r[$ri] = soul_backupFolder((const char*)r[$si], (const char*)r[$di]);";
+            }
+
+            return "  soul_backupFolder((const char*)r[$si], (const char*)r[$di]);";
+        }
+
         if ($name === 'dir_close') {
             if (count($argsOperands) !== 1) {
                 return '  /* ERROR: dir_close expects 1 arg */';
@@ -2375,9 +2630,9 @@ final class CEmitter
                 'listdir','dir_next','dir_close', 'rmdir',
                 'join','concat','slice',
                 'endswith','startswith','length',
-                'copy','mkdir','append', 'copyFolder', 'move',
+                'copy','mkdir','append', 'copyFolder', 'backup', 'move',
                 'stat','isfile','isdir','http_get', 'net_read', 'net_close',
-                'open','write','close', 'remove', 'mtime', 'buildstr',
+                'open','close', 'remove', 'mtime', 'buildstr', 'mkdir',
                 'workerId', 'workerCount', 'atomicCounter', 'atomicAppend',
                 'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree'
             ], true)) return true;
@@ -2386,6 +2641,20 @@ final class CEmitter
         return false;
     }
 
+    private function programUsesParallel(IrProgram $program): bool
+    {
+        foreach ($program->instructions as $inst) {
+            if ($inst->opCode !== OpCode::CALL_BUILTIN) continue;
+
+            $nameOp = $inst->operands[0] ?? null;
+            if (!($nameOp instanceof IrLit)) continue;
+
+            if ($nameOp->value === 'parallelRun' || $nameOp->value === 'parallelWait') {
+                return true;
+            }
+        }
+        return false;
+    }
 
 
     // --------------------------------------------------
@@ -2429,6 +2698,27 @@ final class CEmitter
         return [$regs, $vars];
     }
 
+    private function regComesFromOpen(IrProgram $program, IrReg $reg): bool
+    {
+        $target = $reg->name;
+
+        foreach ($program->instructions as $inst) {
+            if ($inst->opCode !== OpCode::CALL_BUILTIN) continue;
+
+            $nameOp = $inst->operands[0] ?? null;
+            if (!($nameOp instanceof IrLit) || $nameOp->value !== 'open') continue;
+
+            // Estructura: CALL_BUILTIN <lit('open')> <argReg> <dstReg>
+            $ops = $inst->operands;
+            $maybeDst = $ops[count($ops) - 1] ?? null;
+
+            if ($maybeDst instanceof IrReg && $maybeDst->name === $target) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private function maxRegIndex(array $regs): int
     {
@@ -2453,6 +2743,91 @@ final class CEmitter
         }
         return (int)$m[1];
     }
+
+private function collectOpenHandleVars(IrProgram $program): array
+{
+    $vars = [];
+
+    $insts = $program->instructions;
+    $n = count($insts);
+
+    for ($i = 0; $i < $n; $i++) {
+        $inst = $insts[$i];
+
+        if ($inst->opCode !== OpCode::CALL_BUILTIN) continue;
+
+        $nameOp = $inst->operands[0] ?? null;
+        if (!($nameOp instanceof IrLit) || $nameOp->value !== 'open') continue;
+
+        // open(path) devuelve en el último operando (dstReg)
+        $dstReg = $inst->operands[count($inst->operands) - 1] ?? null;
+        if (!($dstReg instanceof IrReg)) continue;
+
+        // patrón típico: CALL_BUILTIN open ... <dstReg>  seguido de STORE_VAR <dstReg> <$var>
+        if ($i + 1 < $n) {
+            $next = $insts[$i + 1];
+            if ($next->opCode === OpCode::STORE_VAR) {
+                [$src, $var] = $next->operands;
+                if ($src instanceof IrReg && $var instanceof IrVar && $src->name === $dstReg->name) {
+                    $vars[$var->name] = true;
+                }
+            }
+        }
+    }
+
+    return $vars; // set de nombres de variable
+}
+
+private function regIsWriteHandle(IrProgram $program, int $ip, IrReg $reg, array $openHandleVars): bool
+{
+    $target = $reg->name;
+    $insts = $program->instructions;
+
+    for ($j = $ip - 1; $j >= 0; $j--) {
+        $inst = $insts[$j];
+
+        // LOAD_VAR <$var> <dstReg>
+        if ($inst->opCode === OpCode::LOAD_VAR) {
+            [$var, $dst] = $inst->operands;
+            if ($dst instanceof IrReg && $dst->name === $target && $var instanceof IrVar) {
+                return isset($openHandleVars[$var->name]);
+            }
+        }
+
+        // CALL_BUILTIN open ... <dstReg>
+        if ($inst->opCode === OpCode::CALL_BUILTIN) {
+            $nameOp = $inst->operands[0] ?? null;
+            if ($nameOp instanceof IrLit && $nameOp->value === 'open') {
+                $dst = $inst->operands[count($inst->operands) - 1] ?? null;
+                if ($dst instanceof IrReg && $dst->name === $target) {
+                    return true;
+                }
+            }
+        }
+
+        // LOAD_CONST <lit> <dstReg> (si pisa el registro, ya no es handle)
+        if ($inst->opCode === OpCode::LOAD_CONST) {
+            [$lit, $dst] = $inst->operands;
+            if ($dst instanceof IrReg && $dst->name === $target) {
+                return false;
+            }
+        }
+
+        // Operaciones que escriben dst (ADD/SUB/.../CMP/... etc) si pisan target => ya no es handle
+        // (si quieres, añade más casos; con esto suele bastar)
+        if (in_array($inst->opCode, [OpCode::ADD,OpCode::SUB,OpCode::MUL,OpCode::DIV,OpCode::MOD,
+                                    OpCode::CMP_LT,OpCode::CMP_LE,OpCode::CMP_GT,OpCode::CMP_GE,OpCode::CMP_EQ,OpCode::CMP_NE], true)) {
+            $dst = $inst->operands[2] ?? null;
+            if ($dst instanceof IrReg && $dst->name === $target) {
+                return false;
+            }
+        }
+    }
+
+    return false;
+}
+
+
 
     private function cVar(string $name): string
     {

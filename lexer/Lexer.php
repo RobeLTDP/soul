@@ -656,6 +656,12 @@ class Lexer
             return;
         }
 
+        // null literal
+        if ($value === "null") {
+            $this->tokens[] = new Token("NULL", null, $this->line);
+            return;
+        }
+
         // Identificador normal
         $this->tokens[] = new Token("IDENTIFIER", $value, $this->line);
     }

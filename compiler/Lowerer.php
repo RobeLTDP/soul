@@ -52,7 +52,7 @@ final class Lowerer
         $this->lowerTopLevel($ast->statements);
 
 
-        $this->program->add(new IrInstruction(OpCode::EXIT));
+        $this->program->add(new IrInstruction(OpCode::EXIT));        
         return $this->program;
     }
 
