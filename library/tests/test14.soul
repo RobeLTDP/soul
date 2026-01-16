@@ -1,0 +1,29 @@
+printStr("=== TEST 14: soul plan (no side effects) ===")
+
+src = "/home/dmin/dev/soulc/library/baseFolder/copia1501"
+dst = "/home/dmin/dev/soulc/library/baseFolder/copia1501_plan"
+
+files = 0
+dirs = 0
+
+for entry in listdir(src):
+    path = join(src, entry)
+
+    st = stat(path)
+
+    if isdir(st):
+        dirs = dirs + 1
+        printStr("DIR -> would create:")
+        printStr(join(dst, entry))
+    else:
+        files = files + 1
+        printStr("FILE -> would copy:")
+        printStr(join(dst, entry))
+
+printStr("SUMMARY")
+printStr("DIRS:")
+print(dirs)
+printStr("FILES:")
+print(files)
+
+printStr("=== TEST 14 DONE ===")

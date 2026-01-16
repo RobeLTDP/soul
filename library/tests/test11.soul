@@ -1,0 +1,8 @@
+printStr("=== TEST 11: permissions (REAL) ===")
+
+src = "/home/dmin/dev/soulc/library/baseFolder/copia1501"
+dst = "/root/forbidden_backup"
+
+copyFolder(src, dst)
+
+printStr("=== TEST 11 DONE ===")

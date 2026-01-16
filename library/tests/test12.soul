@@ -1,0 +1,8 @@
+printStr("=== TEST 12: invalid paths ===")
+
+src = "/home/dmin/dev/soulc/library/baseFolder/ESTA_RUTA_NO_EXISTE"
+dst = "/home/dmin/dev/soulc/library/baseFolder/dest_should_not_exist"
+
+copyFolder(src, dst)
+
+printStr("=== TEST 12 DONE ===")

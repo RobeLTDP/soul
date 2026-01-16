@@ -1,0 +1,35 @@
+printStr("=== TEST 5 (OFICIAL): copyFolder medium ===")
+
+srcRoot = "/home/dmin/dev/soulc/library/baseFolder/carpeta1000"
+dstRoot = "/home/dmin/dev/soulc/library/baseFolder/carpeta1000_copy"
+
+dirs = 0
+files = 0
+
+mkdir(dstRoot)
+
+for entry in listdir(srcRoot):
+    srcPath = join(srcRoot, entry)
+    dstPath = join(dstRoot, entry)
+
+    if isdir(srcPath):
+        dirs = dirs + 1
+        mkdir(dstPath)
+
+        for file in listdir(srcPath):
+            files = files + 1
+            srcFile = join(srcPath, file)
+            dstFile = join(dstPath, file)
+            printStr(srcFile)
+            copy(srcFile, dstFile)
+    else:
+        files = files + 1
+        copy(srcPath, dstPath)
+
+printStr("DIRECTORIES COPIED:")
+print(dirs)
+
+printStr("FILES COPIED:")
+print(files)
+
+printStr("=== TEST 5 DONE ===")

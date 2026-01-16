@@ -1,0 +1,8 @@
+printStr("=== TEST 6 REAL: copyFolder LARGE ===")
+
+src = "/home/dmin/dev/soulc/library/baseFolder/copia1501"
+dst = "/home/dmin/dev/soulc/library/baseFolder/copia1601"
+
+copyFolder(src, dst)
+
+printStr("=== TEST 6 DONE ===")
