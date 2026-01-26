@@ -4,25 +4,64 @@ uso: soul run contar_ficheros.soul --folder {carpeta}
 ##
 
 int total = 0
+int jpg = 0
+int mp4 = 0
+int json = 0
+int carpetas = 0
+
 str folderOrigen = arg("--folder")
 str folder = concat("/home/dmin/dev/soulc/", folderOrigen)
 str base = concat(folder, "/")
 
+printStr("Contando carpeta...")
 printStr(folder)
+printStr("")
 
 diriter it = listdir(folder)
 
 while true:
     str item = dir_next(it)
     if item == 0:
-        break
+        break        
 
     str full = concat(base, item)
     any st = stat(full)
 
-    if isfile(st):
+    if isdir(st):
+        carpetas = carpetas + 1 
+
+    if isfile(st):        
         total = total + 1
+
+    if endswith(item, ".jpg"):
+        jpg = jpg + 1
+
+    if endswith(item, ".mp4"):
+        mp4 = mp4 + 1
+        printStr(full)        
+        int ts = mtime(full)      
+        str tsStr = toStr(ts)  
+        printStr(tsStr)
+
+    if endswith(item, ".json"):
+        json = json + 1
+
+
+
+
 
 dir_close(it)
 
+printStr("Total Ficheros:")
 print(total)
+printStr("Carpetas:")
+print(carpetas)
+printStr("Ficheros JPG:")
+print(jpg)
+printStr("Ficheros MP4:")
+print(mp4)
+printStr("Ficheros JSON:")
+print(json)
+printStr("")
+printStr("Finalizado.")
+

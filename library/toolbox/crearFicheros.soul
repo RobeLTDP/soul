@@ -12,7 +12,7 @@ if folder == "":
 mkdir(folder)
 
 int i = 0
-int max = 1000
+int max = 10000
 
 while i < max:
     str name = concat("file_", toStr(i))

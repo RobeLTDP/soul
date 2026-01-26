@@ -1,5 +1,0 @@
-int id  = workerId()
-int cnt = workerCount()
-
-print(id)
-print(cnt)

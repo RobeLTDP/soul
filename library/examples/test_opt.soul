@@ -1,6 +1,0 @@
-str a = "hello"
-str b = "world"
-str c = "!"
-str x = concat(a, b)
-x = concat(x, c)
-print(x)

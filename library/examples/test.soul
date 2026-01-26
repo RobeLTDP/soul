@@ -1,7 +1,0 @@
-int n = argc()
-print(n)
-
-int i = 0
-while i < n:
-    printStr(argv(i))
-    i = i + 1

@@ -8,8 +8,13 @@ str password = arg("--password")
 
 bool ok = true
 
-if password != "CONFIRM_DELETE":
-    printStr("ERROR: invalid token")
+if password == "CONFIRM_DELETE":
+    printStr(password)
+    printStr("Password protection confirmed")
+    ok = true
+else:
+    printStr(password)
+    printStr("PASSWORD PROTECTION NOT APPROVED")
     ok = false
 
 if folder == "":

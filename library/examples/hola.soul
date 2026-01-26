@@ -1,3 +1,0 @@
-let x = true
-if x:
-    printStr("hola")

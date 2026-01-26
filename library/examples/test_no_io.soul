@@ -1,8 +1,0 @@
-c = 0
-
-while true:
-    c = c + 1
-    if c == 99999:
-        break
-
-print(c)

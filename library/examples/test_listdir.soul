@@ -1,9 +1,0 @@
-h = listdir(".")
-
-while true:
-    name = dir_next(h)
-    if name == 0:
-        break
-    printStr(name)
-
-dir_close(h)
