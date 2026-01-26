@@ -21,3 +21,4 @@ vendor/
 
 # ---- Test artifacts ----
 test_data/output/
+trashbin/
