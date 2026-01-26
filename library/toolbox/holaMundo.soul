@@ -1,0 +1,7 @@
+#
+Test básico de Soul
+#
+
+bool x = true
+if x = true:
+    printStr("hola Mundo")

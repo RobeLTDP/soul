@@ -1,0 +1,37 @@
+##
+Prueba básica del builtin overview
+Cuenta ficheros y carpetas recursivamente
+uso: soul run test_overview.soul --folder {ruta}
+##
+
+str folderOrigen = arg("--folder")
+str folder = concat("/home/dmin/dev/soulc/", folderOrigen)
+
+overviewinfo ov = overview(folder)
+
+int files = overviewFiles(ov)
+int dirs  = overviewDirs(ov)
+int totalSize = overviewSize(ov)
+
+printStr("Files:")
+print(files)
+
+printStr("Dirs:")
+print(dirs)
+
+printStr("Size:")
+print(totalSize)
+
+int n = overviewExtCount(ov)
+int i = 0
+
+while i < n:
+    str ext = overviewExtName(ov, i)
+    int f   = overviewExtFiles(ov, i)
+    int s   = overviewExtSize(ov, i)
+
+    printStr(ext)
+    print(f)
+    print(s)
+
+    i = i + 1

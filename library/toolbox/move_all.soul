@@ -1,0 +1,25 @@
+##
+Mueve ficheros de una carpeta a otra
+uso: soul run move.soul --folderOrigen {carpeta} --folderDestino {carpeta}
+##
+
+str folderOrigen  = arg("--folderOrigen")
+str folderDestino = arg("--folderDestino")
+
+str src = concat("/home/dmin/dev/soulc/", folderOrigen)
+str dst = concat("/home/dmin/dev/soulc/", folderDestino)
+
+str name = ""
+str from = ""
+str to = ""
+h = listdir(src)
+
+while true:
+    name = dir_next(h)
+    if name == 0:
+        break
+    from = join(src, name)
+    to   = join(dst, name)
+    move(from, to)
+    
+dir_close(h)

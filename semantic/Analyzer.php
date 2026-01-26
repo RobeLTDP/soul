@@ -28,11 +28,26 @@ class Analyzer
     public function analyze(Program $program): void
     {
         $this->enterScope();
+
+        // ---------------------------------
+        // Constantes internas de fileInfo
+        // ---------------------------------
+        $this->scopes[count($this->scopes) - 1]['exists']    = 'int';
+        $this->scopes[count($this->scopes) - 1]['isFile']    = 'int';
+        $this->scopes[count($this->scopes) - 1]['isDir']     = 'int';
+        $this->scopes[count($this->scopes) - 1]['isSymlink'] = 'int';
+        $this->scopes[count($this->scopes) - 1]['size']      = 'int';
+        $this->scopes[count($this->scopes) - 1]['mtime']     = 'int';
+        $this->scopes[count($this->scopes) - 1]['ext']       = 'int';
+        $this->scopes[count($this->scopes) - 1]['name']      = 'int';
+
         foreach ($program->statements as $stmt) {
             $this->analyzeStatement($stmt);
         }
+
         $this->leaveScope();
     }
+
 
     public function getErrors(): array
     {
@@ -342,15 +357,29 @@ class Analyzer
             "stat"     => "statinfo",
             "isfile"   => "bool",
             "isdir"    => "bool",
-            "mtime"    => "int",
+            "mtime"    => "int",            
 
             // Dir iteration
             "listdir"    => "diriter",
             "dir_next"   => "str",
             "dir_close"  => "void",
+            "walk"       => "diriter",
+            "walk_next"  => "str",
+            "walk_close" => "void",            
             "rmdir"      => "bool",
             "copyFolder" => "bool",
             "backup"     => "bool",
+
+            // Overview
+            "overview"            => "overviewinfo",
+            "overviewFiles"       => "int",
+            "overviewDirs"        => "int",
+            "overviewSize"        => "int",
+            "overviewExtCount"    => "int",
+            "overviewExtName"     => "str",
+            "overviewExtFiles"    => "int",
+            "overviewExtSize"     => "int",
+            "overviewSummary"     => "str",
 
             // Strings
             "concat"     => "str",

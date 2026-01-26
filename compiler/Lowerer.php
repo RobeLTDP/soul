@@ -29,6 +29,8 @@ final class Lowerer
     private IrProgram $program;
     private int $regCounter = 0;
     private int $labelCounter = 0;
+    private bool $hasParallel = false;
+
 
     /** @var string[] */
     private array $breakStack = [];
@@ -44,6 +46,14 @@ final class Lowerer
         $this->program = new IrProgram();
         $this->regCounter = 0;
         $this->labelCounter = 0;
+
+        foreach ($ast->statements as $stmt) {
+            if ($stmt instanceof ParallelStmt) {
+                $this->hasParallel = true;
+                break;
+            }
+        }
+
 
         //foreach ($ast->statements as $stmt) {
         //    $this->lowerStatement($stmt);
@@ -226,106 +236,112 @@ final class Lowerer
         array_pop($this->continueStack);
     }
 
-private function lowerTopLevel(array $statements): void
-{
-    $segment = [];
+    private function lowerTopLevel(array $statements): void
+    {
+        $segment = [];
 
-    foreach ($statements as $stmt) {
-        if ($stmt instanceof ParallelStmt) {
-            // Emitir primero el segmento secuencial acumulado (solo worker 0)
-            if (!empty($segment)) {
-                $this->lowerSequentialSegmentOnlyWorker0($segment);
-                $segment = [];
+        foreach ($statements as $stmt) {
+            if ($stmt instanceof ParallelStmt) {
+                // Emitir primero el segmento secuencial acumulado (solo worker 0)
+                if (!empty($segment)) {
+                    $this->lowerSequentialSegmentOnlyWorker0($segment);
+                    $segment = [];
+                }
+
+                // Emitir el parallel como constructo estructural
+                $this->lowerParallelStmt($stmt);
+                continue;
             }
 
-            // Emitir el parallel como constructo estructural
-            $this->lowerParallelStmt($stmt);
-            continue;
+            $segment[] = $stmt;
         }
 
-        $segment[] = $stmt;
+        // Último segmento secuencial
+        if (!empty($segment)) {
+            if ($this->hasParallel) {
+                $this->lowerSequentialSegmentOnlyWorker0($segment);
+            } else {
+                foreach ($segment as $s) {
+                    $this->lowerStatement($s);
+                }
+            }
+        }
     }
 
-    // Último segmento secuencial
-    if (!empty($segment)) {
-        $this->lowerSequentialSegmentOnlyWorker0($segment);
+    private function lowerSequentialSegmentOnlyWorker0(array $segment): void
+    {
+        // if (workerId() != 0) goto skip;
+        $rWorkerId = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('workerId'), $rWorkerId]
+            )
+        );
+
+        $rZero = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::LOAD_CONST,
+                [IrOperand::lit(0), $rZero]
+            )
+        );
+
+        $rCond = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CMP_NE,
+                [$rWorkerId, $rZero, $rCond]
+            )
+        );
+
+        $skipLabel = $this->newLabel('seq_skip_');
+
+        // JMP_IF_FALSE salta si cond == false.
+        // Queremos saltar el segmento si cond == true (workerId != 0),
+        // así que invertimos: si NO(cond) -> ejecuta; si cond -> goto skip.
+        //
+        // Forma mínima con lo que tienes:
+        // if (cond) goto skip:
+        //   JMP_IF_FALSE cond, label_after_jmp
+        //   JMP skip
+        // label_after_jmp:
+        $afterJmpLabel = $this->newLabel('seq_after_if_');
+
+        $this->program->add(
+            new IrInstruction(
+                OpCode::JMP_IF_FALSE,
+                [$rCond, IrOperand::label($afterJmpLabel)]
+            )
+        );
+
+        $this->program->add(
+            new IrInstruction(
+                OpCode::JMP,
+                [IrOperand::label($skipLabel)]
+            )
+        );
+
+        $this->program->add(
+            new IrInstruction(
+                OpCode::LABEL,
+                [IrOperand::label($afterJmpLabel)]
+            )
+        );
+
+        // Emitir segmento (solo ejecutará worker 0)
+        foreach ($segment as $s) {
+            $this->lowerStatement($s);
+        }
+
+        // Label de salida para workers != 0
+        $this->program->add(
+            new IrInstruction(
+                OpCode::LABEL,
+                [IrOperand::label($skipLabel)]
+            )
+        );
     }
-}
-
-private function lowerSequentialSegmentOnlyWorker0(array $segment): void
-{
-    // if (workerId() != 0) goto skip;
-    $rWorkerId = $this->newReg();
-    $this->program->add(
-        new IrInstruction(
-            OpCode::CALL_BUILTIN,
-            [IrOperand::lit('workerId'), $rWorkerId]
-        )
-    );
-
-    $rZero = $this->newReg();
-    $this->program->add(
-        new IrInstruction(
-            OpCode::LOAD_CONST,
-            [IrOperand::lit(0), $rZero]
-        )
-    );
-
-    $rCond = $this->newReg();
-    $this->program->add(
-        new IrInstruction(
-            OpCode::CMP_NE,
-            [$rWorkerId, $rZero, $rCond]
-        )
-    );
-
-    $skipLabel = $this->newLabel('seq_skip_');
-
-    // JMP_IF_FALSE salta si cond == false.
-    // Queremos saltar el segmento si cond == true (workerId != 0),
-    // así que invertimos: si NO(cond) -> ejecuta; si cond -> goto skip.
-    //
-    // Forma mínima con lo que tienes:
-    // if (cond) goto skip:
-    //   JMP_IF_FALSE cond, label_after_jmp
-    //   JMP skip
-    // label_after_jmp:
-    $afterJmpLabel = $this->newLabel('seq_after_if_');
-
-    $this->program->add(
-        new IrInstruction(
-            OpCode::JMP_IF_FALSE,
-            [$rCond, IrOperand::label($afterJmpLabel)]
-        )
-    );
-
-    $this->program->add(
-        new IrInstruction(
-            OpCode::JMP,
-            [IrOperand::label($skipLabel)]
-        )
-    );
-
-    $this->program->add(
-        new IrInstruction(
-            OpCode::LABEL,
-            [IrOperand::label($afterJmpLabel)]
-        )
-    );
-
-    // Emitir segmento (solo ejecutará worker 0)
-    foreach ($segment as $s) {
-        $this->lowerStatement($s);
-    }
-
-    // Label de salida para workers != 0
-    $this->program->add(
-        new IrInstruction(
-            OpCode::LABEL,
-            [IrOperand::label($skipLabel)]
-        )
-    );
-}
 
     private function lowerParallelStmt(ParallelStmt $stmt): void
     {
@@ -451,77 +467,74 @@ private function lowerSequentialSegmentOnlyWorker0(array $segment): void
         );
     }
 
-private function lowerFor(ForStmt $stmt): void
-{
-    $iterReg = $this->lowerExpression($stmt->iterable);
+    private function lowerFor(ForStmt $stmt): void
+    {
+        $iterReg = $this->lowerExpression($stmt->iterable);
 
-    $startLabel = $this->newLabel('for_start_');
-    $endLabel   = $this->newLabel('for_end_');
-    
-    $this->continueStack[] = $startLabel;
-    $this->breakStack[]    = $endLabel;
+        $startLabel = $this->newLabel('for_start_');
+        $endLabel   = $this->newLabel('for_end_');
+        
+        $this->continueStack[] = $startLabel;
+        $this->breakStack[]    = $endLabel;
 
-    $this->program->add(
-        new IrInstruction(OpCode::LABEL, [IrOperand::label($startLabel)])
-    );
+        $this->program->add(
+            new IrInstruction(OpCode::LABEL, [IrOperand::label($startLabel)])
+        );
 
-    $elemReg = $this->newReg();
-    $this->program->add(
-        new IrInstruction(
-            OpCode::CALL_BUILTIN,
-            [IrOperand::lit('dir_next'), $iterReg, $elemReg]
-        )
-    );
+        $elemReg = $this->newReg();
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('dir_next'), $iterReg, $elemReg]
+            )
+        );
 
-    $condReg = $this->newReg();
-    $nullReg = $this->newReg();
+        $condReg = $this->newReg();
+        $nullReg = $this->newReg();
 
-    $this->program->add(
-        new IrInstruction(OpCode::LOAD_CONST, [IrOperand::lit(null), $nullReg])
-    );
-    $this->program->add(
-        new IrInstruction(OpCode::CMP_NE, [$elemReg, $nullReg, $condReg])
-    );
-    $this->program->add(
-        new IrInstruction(
-            OpCode::JMP_IF_FALSE,
-            [$condReg, IrOperand::label($endLabel)]
-        )
-    );
+        $this->program->add(
+            new IrInstruction(OpCode::LOAD_CONST, [IrOperand::lit(null), $nullReg])
+        );
+        $this->program->add(
+            new IrInstruction(OpCode::CMP_NE, [$elemReg, $nullReg, $condReg])
+        );
+        $this->program->add(
+            new IrInstruction(
+                OpCode::JMP_IF_FALSE,
+                [$condReg, IrOperand::label($endLabel)]
+            )
+        );
 
-    $this->program->add(
-        new IrInstruction(
-            OpCode::STORE_VAR,
-            [$elemReg, IrOperand::var($stmt->varName)]
-        )
-    );
+        $this->program->add(
+            new IrInstruction(
+                OpCode::STORE_VAR,
+                [$elemReg, IrOperand::var($stmt->varName)]
+            )
+        );
 
-    foreach ($stmt->body as $s) {
-        $this->lowerStatement($s);
+        foreach ($stmt->body as $s) {
+            $this->lowerStatement($s);
+        }
+
+        $this->program->add(
+            new IrInstruction(OpCode::JMP, [IrOperand::label($startLabel)])
+        );
+
+        $this->program->add(
+            new IrInstruction(OpCode::LABEL, [IrOperand::label($endLabel)])
+        );
+
+        // 🔴 Y ESTO
+        array_pop($this->breakStack);
+        array_pop($this->continueStack);
+
+        $this->program->add(
+            new IrInstruction(
+                OpCode::CALL_BUILTIN,
+                [IrOperand::lit('dir_close'), $iterReg]
+            )
+        );
     }
-
-    $this->program->add(
-        new IrInstruction(OpCode::JMP, [IrOperand::label($startLabel)])
-    );
-
-    $this->program->add(
-        new IrInstruction(OpCode::LABEL, [IrOperand::label($endLabel)])
-    );
-
-    // 🔴 Y ESTO
-    array_pop($this->breakStack);
-    array_pop($this->continueStack);
-
-    $this->program->add(
-        new IrInstruction(
-            OpCode::CALL_BUILTIN,
-            [IrOperand::lit('dir_close'), $iterReg]
-        )
-    );
-}
-
-
-
 
 
     // --------------------------------------------------
@@ -551,6 +564,7 @@ private function lowerFor(ForStmt $stmt): void
             );
             return $dst;
         }
+
 
         if ($expr instanceof BinaryExpr) {
             return $this->lowerBinary($expr);

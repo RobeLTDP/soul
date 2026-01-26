@@ -301,6 +301,27 @@ final class CEmitter
         '#include <sys/stat.h>',
         '',
 '// --------------------------------------------------',
+'// Filesystem overview',
+'// --------------------------------------------------',
+'',
+'#define SOUL_OV_MAX_EXT 8',
+'#define SOUL_OV_EXT_LEN 16',
+'',
+'typedef struct {',
+'    int64_t files;',
+'    int64_t folders;',
+'    int64_t size;',
+'',
+'    int32_t extCount;',
+'    int32_t extTop;',
+'',
+'    char    extNames[SOUL_OV_MAX_EXT][SOUL_OV_EXT_LEN];',
+'    int64_t extFiles[SOUL_OV_MAX_EXT];',
+'    int64_t extSize[SOUL_OV_MAX_EXT];',
+'} soul_overview_t;',
+'',
+
+'// --------------------------------------------------',
 '// Runtime progress (stderr heartbeat)',
 '// --------------------------------------------------',
 '',
@@ -416,74 +437,230 @@ final class CEmitter
             '  return (uintptr_t)0;',
             '}',
             '',
-'// --------------------------------------------------',
-'// CLI arguments (argc / argv)',
-'// --------------------------------------------------',
-'',
-'static int soul_argc = 0;',
-'static char** soul_argv = 0;',
-'',
-'static void soul_set_args(int argc, char** argv) {',
-'   soul_argc = argc;',
-'    soul_argv = argv;',
-'}',
-'',
-'static uintptr_t soul_argc_fn(void) {',
-'    return (uintptr_t)soul_argc;',
-'}',
-'',
-'static uintptr_t soul_argv_fn(int64_t i) {',
-'    if (i < 0 || i >= soul_argc) return (uintptr_t)0;',
-'    return (uintptr_t)soul_argv[i];',
-'}',
-'',
-'static uintptr_t soul_arg(const char* name, const char* def) {',
-'    if (!name || !soul_argv) {',
-'        return (uintptr_t)(def ? def : "");',
-'    }',
-'',
-'    for (int i = 1; i < soul_argc; i++) {',
-'        const char* a = soul_argv[i];',
-'        if (!a) continue;',
-'',
-'        // comparación manual (sin strcmp)',
-'        int j = 0;',
-'        while (name[j] && a[j] && name[j] == a[j]) j++;',
-'        if (name[j] == 0 && a[j] == 0) {',
-'            // encontrado',
-'            if (i + 1 < soul_argc) {',
-'                return (uintptr_t)soul_argv[i + 1];',
-'            }',
-'            return (uintptr_t)"";',
-'        }',
-'    }',
-'',
-'    return (uintptr_t)(def ? def : "");',
-'}',
-'',
-'static uintptr_t soul_to_int(const char* s) {',
-'    if (!s) return 0;',
-'',
-'    int neg = 0;',
-'    if (*s == \'-\') {',
-'        neg = 1;',
-'        s++;',
-'    }',
-'',
-'    int64_t val = 0;',
-'    while (*s >= \'0\' && *s <= \'9\') {',
-'        val = val * 10 + (*s - \'0\');',
-'        s++;',
-'    }',
-'',
-'    return (uintptr_t)(neg ? -val : val);',
-'}',
-'',
-'static uintptr_t soul_rmdir(const char* path) {',
-'    if (!path) return 0;',
-'    return syscall(SYS_unlinkat, AT_FDCWD, path, AT_REMOVEDIR) == 0 ? 1 : 0;',
-'}',
-'',
+            'typedef struct {
+                int fd;
+                int nread;
+                int bpos;
+                int finished;
+
+                char buf[1 << 16];
+
+                // stack de directorios pendientes
+                char stack[256][4096];
+                int stackSize;
+
+                // path actual
+                char currentPath[4096];
+            } walk_iter_t;',
+            '#define MAX_WALK_ITERS 4
+
+            static walk_iter_t walk_iters[MAX_WALK_ITERS];
+                        
+            __attribute__((constructor))
+            static void soul_walk_init(void) {
+                for (int i = 0; i < MAX_WALK_ITERS; i++) {
+                    walk_iters[i].fd = -1;
+                }
+            }
+            
+            static uintptr_t soul_walk(const char* path) {
+                if (!path || !path[0]) return 0;
+
+                for (int i = 0; i < MAX_WALK_ITERS; i++) {
+                    if (walk_iters[i].fd < 0) {
+
+                        memset(&walk_iters[i], 0, sizeof(walk_iter_t));
+
+                        int fd = (int)syscall(
+                            SYS_openat,
+                            AT_FDCWD,
+                            path,
+                            O_RDONLY | O_DIRECTORY,
+                            0
+                        );
+
+                        if (fd < 0) return 0;
+
+                        walk_iters[i].fd = fd;
+                        walk_iters[i].stackSize = 0;
+
+                        // guardar path raíz
+                        strncpy(walk_iters[i].currentPath, path, sizeof(walk_iters[i].currentPath) - 1);
+
+                        return (uintptr_t)(i + 1);
+                    }
+                }
+
+                return 0;
+            }',
+            'static uintptr_t soul_walk_next(uintptr_t h) {
+                if (!h) return 0;
+
+                int idx = (int)h - 1;
+                if (idx < 0 || idx >= MAX_WALK_ITERS) return 0;
+
+                walk_iter_t* it = &walk_iters[idx];
+                if (it->fd < 0) return 0;
+
+
+                static char outBufs[8][4096];
+                static int outIdx = 0;
+                char* out = outBufs[(outIdx++) & 7];
+
+                for (;;) {
+
+                    if (it->bpos >= it->nread) {
+                        it->nread = (int)syscall(
+                            SYS_getdents64,
+                            it->fd,
+                            it->buf,
+                            sizeof(it->buf)
+                        );
+                        it->bpos = 0;
+
+                        if (it->nread <= 0) {
+                            syscall(SYS_close, it->fd);
+                            it->fd = 0;
+
+                            if (it->stackSize == 0) {
+                                return 0;
+                            }
+
+                            // pop siguiente directorio
+                            it->stackSize--;
+                            strncpy(
+                                it->currentPath,
+                                it->stack[it->stackSize],
+                                sizeof(it->currentPath) - 1
+                            );
+                            it->currentPath[sizeof(it->currentPath) - 1] = 0;
+
+                            it->fd = (int)syscall(
+                                SYS_openat,
+                                AT_FDCWD,
+                                it->currentPath,
+                                O_RDONLY | O_DIRECTORY,
+                                0
+                            );
+
+                            it->nread = 0;
+                            it->bpos = 0;
+                            continue;
+                        }
+                    }
+
+                    struct linux_dirent64* d =
+                        (struct linux_dirent64*)(it->buf + it->bpos);
+
+                    it->bpos += d->d_reclen;
+
+                    // saltar "." y ".." (forma segura)
+                    if (d->d_name[0] == \'.\') {
+                        if (d->d_name[1] == 0) continue;
+                        if (d->d_name[1] == \'.\' && d->d_name[2] == 0) continue;
+                    }
+
+                    snprintf(out, 4096, "%s/%s", it->currentPath, d->d_name);
+
+                    // comprobar si es directorio con lstat
+                    struct stat st;
+                    if (it->stackSize < 256 &&
+                        lstat(out, &st) == 0 &&
+                        S_ISDIR(st.st_mode)) {
+
+                        strncpy(it->stack[it->stackSize], out, 4095);
+                        it->stack[it->stackSize][4095] = 0;
+                        it->stackSize++;
+                    }
+
+                    return (uintptr_t)out;
+                }
+            }',
+            'static void soul_walk_close(uintptr_t h) {
+                if (!h) return;
+
+                int idx = (int)h - 1;
+                if (idx < 0 || idx >= MAX_WALK_ITERS) return;
+
+                walk_iter_t* it = &walk_iters[idx];
+
+                if (it->fd > 0) {
+                    syscall(SYS_close, it->fd);
+                }
+
+                memset(it, 0, sizeof(walk_iter_t));
+                it->fd = -1;
+            }',
+
+
+            '// --------------------------------------------------',
+            '// CLI arguments (argc / argv)',
+            '// --------------------------------------------------',
+            '',
+            'static int soul_argc = 0;',
+            'static char** soul_argv = 0;',
+            '',
+            'static void soul_set_args(int argc, char** argv) {',
+            '   soul_argc = argc;',
+            '    soul_argv = argv;',
+            '}',
+            '',
+            'static uintptr_t soul_argc_fn(void) {',
+            '    return (uintptr_t)soul_argc;',
+            '}',
+            '',
+            'static uintptr_t soul_argv_fn(int64_t i) {',
+            '    if (i < 0 || i >= soul_argc) return (uintptr_t)0;',
+            '    return (uintptr_t)soul_argv[i];',
+            '}',
+            '',
+            'static uintptr_t soul_arg(const char* name, const char* def) {',
+            '    if (!name || !soul_argv) {',
+            '        return (uintptr_t)(def ? def : "");',
+            '    }',
+            '',
+            '    for (int i = 1; i < soul_argc; i++) {',
+            '        const char* a = soul_argv[i];',
+            '        if (!a) continue;',
+            '',
+            '        // comparación manual (sin strcmp)',
+            '        int j = 0;',
+            '        while (name[j] && a[j] && name[j] == a[j]) j++;',
+            '        if (name[j] == 0 && a[j] == 0) {',
+            '            // encontrado',
+            '            if (i + 1 < soul_argc) {',
+            '                return (uintptr_t)soul_argv[i + 1];',
+            '            }',
+            '            return (uintptr_t)"";',
+            '        }',
+            '    }',
+            '',
+            '    return (uintptr_t)(def ? def : "");',
+            '}',
+            '',
+            'static uintptr_t soul_to_int(const char* s) {',
+            '    if (!s) return 0;',
+            '',
+            '    int neg = 0;',
+            '    if (*s == \'-\') {',
+            '        neg = 1;',
+            '        s++;',
+            '    }',
+            '',
+            '    int64_t val = 0;',
+            '    while (*s >= \'0\' && *s <= \'9\') {',
+            '        val = val * 10 + (*s - \'0\');',
+            '        s++;',
+            '    }',
+            '',
+            '    return (uintptr_t)(neg ? -val : val);',
+            '}',
+            '',
+            'static uintptr_t soul_rmdir(const char* path) {',
+            '    if (!path) return 0;',
+            '    return syscall(SYS_unlinkat, AT_FDCWD, path, AT_REMOVEDIR) == 0 ? 1 : 0;',
+            '}',
+            '',
             'static uintptr_t soul_concat(const char* a, const char* b) {',
             '  static char bufs[16][4096];',
             '  static int bufIdx = 0;',
@@ -1506,177 +1683,392 @@ final class CEmitter
             '    return (w == (long)len) ? 1 : 0;',
             '}',   
             '',
-            'static int64_t soul_copy_total_files = 0;',
-'static void soul_copy_collect(const char* src, const char* dst) {',
-'  struct stat st;',
-'  if (stat(src, &st) != 0) return;',
+'static void soul_ov_add_ext(soul_overview_t* ov, const char* name, int64_t size) {',
+'    if (!name || !name[0]) return;',
 '',
-'  if (S_ISDIR(st.st_mode)) {',
-'    syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
-'',
-'    int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
-'    if (fd < 0) return;',
-'',
-'    char buf[1 << 16];',
-'    for (;;) {',
-'      int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
-'      if (nread <= 0) break;',
-'',
-'      int bpos = 0;',
-'      while (bpos < nread) {',
-'        struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
-'        bpos += d->d_reclen;',
-'',
-'        if (d->d_name[0] == \'.\' &&',
-'           (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
-'          continue;',
-'',
-'        char srcPath[4096];',
-'        char dstPath[4096];',
-'        snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
-'        snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
-'',
-'        soul_copy_collect(srcPath, dstPath);',
-'      }',
-'    }',
-'    syscall(SYS_close, fd);',
-'  }',
-'  else if (S_ISREG(st.st_mode)) {',
-'    char line[8192];',
-'    int n = snprintf(line, sizeof(line), "%s|%s\\n", src, dst);',
-'    if (n > 0) {',
-'      soul_atomic_append(soul_copy_list_path, line);',
-'      soul_copy_total_files++;',
-'    }',
-'  }',
-'}',
-'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst) {',
-'  soul_worker_init();',
-'',
-'  snprintf(',
-'    soul_copy_list_path,',
-'    sizeof(soul_copy_list_path),',
-'    "/tmp/soul_copy_%d.lst",',
-'    soul_job_id',
-'  );',
-'',
-'  if (soul_worker_id == 0) {',
-'',
-'    // CREAR LISTA VACÍA ANTES DEL SCAN (evita estado residual)',
-'    {',
-'      int fd = (int)syscall(',
-'        SYS_openat,',
-'        AT_FDCWD,',
-'        soul_copy_list_path,',
-'        O_WRONLY | O_CREAT | O_TRUNC,',
-'        0644',
-'      );',
-'      if (fd >= 0) syscall(SYS_close, fd);',
-'    }',
-'',
-'    soul_progress_begin("scan");',
-'    soul_copy_total_files = 0;',
-'    soul_copy_collect(src, dst);',
-'',
-'    // guardar total en fichero',
-'    char metaPath[256];',
-'    snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
-'    FILE* mf = fopen(metaPath, "w");',
-'    if (mf) {',
-'        fprintf(mf, "%lld\\n", (long long)soul_copy_total_files);',
-'        fclose(mf);',
-'    }',
-'',
-'    soul_progress_end(1);',
-'  }',
-
-'',
-'  while (access(soul_copy_list_path, F_OK) != 0) {',
-'    usleep(1000);',
-'  }',
-'char metaPath[256];',
-'snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
-'',
-'FILE* mf = NULL;',
-'while (!mf) {',
-'    mf = fopen(metaPath, "r");',
-'    if (!mf) usleep(1000);',
-'}',
-'',
-'fscanf(mf, "%lld", &soul_copy_total_files);',
-'fclose(mf);',
-'',
-'  // reset contador atómico + barrera de arranque',
-'  char counterPath[256];',
-'  char startPath[256];',
-'',
-'  snprintf(counterPath, sizeof(counterPath), "/tmp/soul_counter_copy_idx_%d", soul_job_id);',
-'  snprintf(startPath, sizeof(startPath), "/tmp/soul_copy_%d.start", soul_job_id);',
-'',
-'  if (soul_worker_id == 0) {',
-'      unlink(counterPath);',
-'      unlink(startPath);',
-'      int fd = (int)syscall(SYS_openat, AT_FDCWD, startPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-'      if (fd >= 0) syscall(SYS_close, fd);',
-'      soul_progress_begin("copy");',
-'  }',
-'',
-'  // esperar a que el contador haya sido reseteado por el worker 0',
-'  while (access(startPath, F_OK) != 0) {',
-'      usleep(1000);',
-'  }',
-'',
-'  for (;;) {',
-'    char counterName[64];',
-'    snprintf(counterName, sizeof(counterName), "copy_idx_%d", soul_job_id);',
-'',
-'    int idx = (int)soul_atomic_counter(counterName) - 1;',
-'',
-'    // parada dura: no hay mas trabajo',
-'    if (idx >= soul_copy_total_files) {',
-'      break;',
-'    }',
-'',
-'    FILE* f = fopen(soul_copy_list_path, "r");',
-'    if (!f) {',
-'      break;',
-'    }',
-'',
-'    char line[8192];',
-'    int cur = 0;',
-'    int found = 0;',
-'',
-'    while (fgets(line, sizeof(line), f)) {',
-'      if (cur++ == idx) {',
-'        found = 1;',
-'        char* sep = strchr(line, \'|\');',
-'        if (sep) {',
-'          *sep = 0;',
-'          char* srcP = line;',
-'          char* dstP = sep + 1;',
-'          char* nl = strchr(dstP, \'\\n\');',
-'          if (nl) *nl = 0;',
-'          soul_copy(srcP, dstP);',
+'    // buscar si ya existe',
+'    for (int i = 0; i < ov->extTop; i++) {',
+'        if (strncmp(ov->extNames[i], name, SOUL_OV_EXT_LEN) == 0) {',
+'            ov->extFiles[i]++;',
+'            ov->extSize[i] += size;',
+'            return;',
 '        }',
-'        break;',
-'      }',
 '    }',
-'    fclose(f);',
 '',
-'    // si el indice no corresponde a ninguna linea real, salir',
-'    if (!found) {',
-'      break;',
+'    // nueva extensión',
+'    ov->extCount++;',
+'',
+'    if (ov->extTop < SOUL_OV_MAX_EXT) {',
+'        int i = ov->extTop++;',
+'        strncpy(ov->extNames[i], name, SOUL_OV_EXT_LEN - 1);',
+'        ov->extNames[i][SOUL_OV_EXT_LEN - 1] = 0;',
+'        ov->extFiles[i] = 1;',
+'        ov->extSize[i]  = size;',
 '    }',
-'  }',
-'',
-'  if (soul_worker_id == 0) {',
-'if (soul_progress_action) {',
-'    soul_progress_end(1);',
 '}',
-'  }',
 '',
-'  return 1;',
-'}',            
+'static const char* soul_ov_ext(const char* name) {',
+'    const char* dot = NULL;',
+'    const char* p = name;',
+'    while (*p) { if (*p == \'.\') dot = p; p++; }',
+'    if (!dot || dot == name) return NULL;',
+'    return dot + 1;',
+'}',
+'',
+'static void soul_ov_scan(const char* path, soul_overview_t* ov) {',
+'    struct stat st;',
+'    if (lstat(path, &st) != 0) return;',
+'',
+'    if (S_ISDIR(st.st_mode)) {',
+'        ov->folders++;',
+'',
+'        int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_DIRECTORY, 0);',
+'        if (fd < 0) return;',
+'',
+'        char buf[1 << 16];',
+'        for (;;) {',
+'            int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+'            if (nread <= 0) break;',
+'',
+'            int bpos = 0;',
+'            while (bpos < nread) {',
+'                struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+'                bpos += d->d_reclen;',
+'',
+'                if (d->d_name[0] == \'.\' &&',
+'                   (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
+'                    continue;',
+'',
+'                char child[4096];',
+'                snprintf(child, sizeof(child), "%s/%s", path, d->d_name);',
+'                soul_ov_scan(child, ov);',
+'            }',
+'        }',
+'',
+'        syscall(SYS_close, fd);',
+'        return;',
+'    }',
+'',
+'    if (S_ISREG(st.st_mode)) {',
+'        ov->files++;',
+'        ov->size += st.st_size;',
+'',
+'        const char* ext = soul_ov_ext(path);',
+'        if (ext) soul_ov_add_ext(ov, ext, st.st_size);',
+'        return;',
+'    }',
+'}',
+'',
+'static soul_overview_t soul_overview_pool[4];',
+'static int soul_overview_idx = 0;',
+'',
+'static uintptr_t soul_overview(const char* path) {',
+'    if (!path || !path[0]) return 0;',
+'',
+'    soul_overview_t* ov = &soul_overview_pool[soul_overview_idx++ & 3];',
+'    memset(ov, 0, sizeof(*ov));',
+'',
+'    soul_ov_scan(path, ov);',
+'',
+'    return (uintptr_t)ov;',
+'}',
+'',
+'static uintptr_t soul_overviewFiles(uintptr_t p) {',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    if (!ov) return 0;',
+'    return (uintptr_t)ov->files;',
+'}',
+'',
+'static uintptr_t soul_overviewDirs(uintptr_t p) {',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    if (!ov) return 0;',
+'    return (uintptr_t)ov->folders;',
+'}',
+'static uintptr_t soul_overview_files(uintptr_t p) {',
+'    if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    return (uintptr_t)ov->files;',
+'}',
+'',
+'static uintptr_t soul_overview_dirs(uintptr_t p) {',
+'    if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    return (uintptr_t)ov->folders;',
+'}',
+'',
+'static uintptr_t soul_overview_size(uintptr_t p) {',
+'    if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    return (uintptr_t)ov->size;',
+'}',
+'',
+'static uintptr_t soul_overview_ext_count(uintptr_t p) {',
+'    if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    return (uintptr_t)ov->extTop;',
+'}',
+'',
+'static uintptr_t soul_overview_ext_name(uintptr_t p, int64_t i) {',
+'    if (!p) return (uintptr_t)0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    if (i < 0 || i >= ov->extTop) return (uintptr_t)0;',
+'    return (uintptr_t)ov->extNames[i];',
+'}',
+'',
+'static uintptr_t soul_overview_ext_files(uintptr_t p, int64_t i) {',
+'   if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    if (i < 0 || i >= ov->extTop) return 0;',
+'    return (uintptr_t)ov->extFiles[i];',
+'}',
+'',
+'static uintptr_t soul_overview_ext_size(uintptr_t p, int64_t i) {',
+'    if (!p) return 0;',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'    if (i < 0 || i >= ov->extTop) return 0;',
+'    return (uintptr_t)ov->extSize[i];',
+'}',
+'// --------------------------------------------------',
+'// overviewSummary: human-readable summary',
+'// --------------------------------------------------',
+'',
+'static const char* soul_fmt_size(int64_t bytes) {',
+'    static char buf[64];',
+'    if (bytes < 1024) {',
+'        snprintf(buf, sizeof(buf), "%lld B", (long long)bytes);',
+'    } else if (bytes < 1024LL * 1024) {',
+'        snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);',
+'    } else if (bytes < 1024LL * 1024 * 1024) {',
+'        snprintf(buf, sizeof(buf), "%.1f MB", bytes / (1024.0 * 1024));',
+'    } else {',
+'        snprintf(buf, sizeof(buf), "%.2f GB", bytes / (1024.0 * 1024 * 1024));',
+'    }',
+'    return buf;',
+'}',
+'',
+'static uintptr_t soul_overviewSummary(uintptr_t p) {',
+'    if (!p) return (uintptr_t)"";',
+'',
+'    soul_overview_t* ov = (soul_overview_t*)p;',
+'',
+'    char tmp[4096];',
+'    int pos = 0;',
+'',
+'    pos += snprintf(tmp + pos, sizeof(tmp) - pos,',
+'        "Files: %lld\\nDirs: %lld\\nSize: %s\\n",',
+'        (long long)ov->files,',
+'        (long long)ov->folders,',
+'        soul_fmt_size(ov->size)',
+'    );',
+'',
+'    // ordenar extensiones por tamaño (burbuja simple, max 8)',
+'    for (int i = 0; i < ov->extTop; i++) {',
+'        for (int j = i + 1; j < ov->extTop; j++) {',
+'            if (ov->extSize[j] > ov->extSize[i]) {',
+'                char tmpName[SOUL_OV_EXT_LEN];',
+'                int64_t tmpFiles, tmpSize;',
+'',
+'                strncpy(tmpName, ov->extNames[i], SOUL_OV_EXT_LEN);',
+'                strncpy(ov->extNames[i], ov->extNames[j], SOUL_OV_EXT_LEN);',
+'                strncpy(ov->extNames[j], tmpName, SOUL_OV_EXT_LEN);',
+'',
+'                tmpFiles = ov->extFiles[i];',
+'                ov->extFiles[i] = ov->extFiles[j];',
+'                ov->extFiles[j] = tmpFiles;',
+'',
+'                tmpSize = ov->extSize[i];',
+'                ov->extSize[i] = ov->extSize[j];',
+'                ov->extSize[j] = tmpSize;',
+'            }',
+'        }',
+'    }',
+'',
+'    // top extensiones',
+'    for (int i = 0; i < ov->extTop && i < 5; i++) {',
+'        pos += snprintf(tmp + pos, sizeof(tmp) - pos,',
+'            "%s: %lld files, %s\\n",',
+'            ov->extNames[i],',
+'            (long long)ov->extFiles[i],',
+'            soul_fmt_size(ov->extSize[i])',
+'        );',
+'    }',
+'',
+'    tmp[pos] = 0;',
+'    return (uintptr_t)soul_persist_str(tmp);',
+'}',
+
+
+            'static int64_t soul_copy_total_files = 0;',
+            'static void soul_copy_collect(const char* src, const char* dst) {',
+            '  struct stat st;',
+            '  if (stat(src, &st) != 0) return;',
+            '',
+            '  if (S_ISDIR(st.st_mode)) {',
+            '    syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
+            '',
+            '    int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
+            '    if (fd < 0) return;',
+            '',
+            '    char buf[1 << 16];',
+            '    for (;;) {',
+            '      int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+            '      if (nread <= 0) break;',
+            '',
+            '      int bpos = 0;',
+            '      while (bpos < nread) {',
+            '        struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+            '        bpos += d->d_reclen;',
+            '',
+            '        if (d->d_name[0] == \'.\' &&',
+            '           (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
+            '          continue;',
+            '',
+            '        char srcPath[4096];',
+            '        char dstPath[4096];',
+            '        snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
+            '        snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
+            '',
+            '        soul_copy_collect(srcPath, dstPath);',
+            '      }',
+            '    }',
+            '    syscall(SYS_close, fd);',
+            '  }',
+            '  else if (S_ISREG(st.st_mode)) {',
+            '    char line[8192];',
+            '    int n = snprintf(line, sizeof(line), "%s|%s\\n", src, dst);',
+            '    if (n > 0) {',
+            '      soul_atomic_append(soul_copy_list_path, line);',
+            '      soul_copy_total_files++;',
+            '    }',
+            '  }',
+            '}',
+            'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst) {',
+            '  soul_worker_init();',
+            '',
+            '  snprintf(',
+            '    soul_copy_list_path,',
+            '    sizeof(soul_copy_list_path),',
+            '    "/tmp/soul_copy_%d.lst",',
+            '    soul_job_id',
+            '  );',
+            '',
+            '  if (soul_worker_id == 0) {',
+            '',
+            '    // CREAR LISTA VACÍA ANTES DEL SCAN (evita estado residual)',
+            '    {',
+            '      int fd = (int)syscall(',
+            '        SYS_openat,',
+            '        AT_FDCWD,',
+            '        soul_copy_list_path,',
+            '        O_WRONLY | O_CREAT | O_TRUNC,',
+            '        0644',
+            '      );',
+            '      if (fd >= 0) syscall(SYS_close, fd);',
+            '    }',
+            '',
+            '    soul_progress_begin("scan");',
+            '    soul_copy_total_files = 0;',
+            '    soul_copy_collect(src, dst);',
+            '',
+            '    // guardar total en fichero',
+            '    char metaPath[256];',
+            '    snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+            '    FILE* mf = fopen(metaPath, "w");',
+            '    if (mf) {',
+            '        fprintf(mf, "%lld\\n", (long long)soul_copy_total_files);',
+            '        fclose(mf);',
+            '    }',
+            '',
+            '    soul_progress_end(1);',
+            '  }',
+
+            '',
+            '  while (access(soul_copy_list_path, F_OK) != 0) {',
+            '    usleep(1000);',
+            '  }',
+            'char metaPath[256];',
+            'snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+            '',
+            'FILE* mf = NULL;',
+            'while (!mf) {',
+            '    mf = fopen(metaPath, "r");',
+            '    if (!mf) usleep(1000);',
+            '}',
+            '',
+            'fscanf(mf, "%lld", &soul_copy_total_files);',
+            'fclose(mf);',
+            '',
+            '  // reset contador atómico + barrera de arranque',
+            '  char counterPath[256];',
+            '  char startPath[256];',
+            '',
+            '  snprintf(counterPath, sizeof(counterPath), "/tmp/soul_counter_copy_idx_%d", soul_job_id);',
+            '  snprintf(startPath, sizeof(startPath), "/tmp/soul_copy_%d.start", soul_job_id);',
+            '',
+            '  if (soul_worker_id == 0) {',
+            '      unlink(counterPath);',
+            '      unlink(startPath);',
+            '      int fd = (int)syscall(SYS_openat, AT_FDCWD, startPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+            '      if (fd >= 0) syscall(SYS_close, fd);',
+            '      soul_progress_begin("copy");',
+            '  }',
+            '',
+            '  // esperar a que el contador haya sido reseteado por el worker 0',
+            '  while (access(startPath, F_OK) != 0) {',
+            '      usleep(1000);',
+            '  }',
+            '',
+            '  for (;;) {',
+            '    char counterName[64];',
+            '    snprintf(counterName, sizeof(counterName), "copy_idx_%d", soul_job_id);',
+            '',
+            '    int idx = (int)soul_atomic_counter(counterName) - 1;',
+            '',
+            '    // parada dura: no hay mas trabajo',
+            '    if (idx >= soul_copy_total_files) {',
+            '      break;',
+            '    }',
+            '',
+            '    FILE* f = fopen(soul_copy_list_path, "r");',
+            '    if (!f) {',
+            '      break;',
+            '    }',
+            '',
+            '    char line[8192];',
+            '    int cur = 0;',
+            '    int found = 0;',
+            '',
+            '    while (fgets(line, sizeof(line), f)) {',
+            '      if (cur++ == idx) {',
+            '        found = 1;',
+            '        char* sep = strchr(line, \'|\');',
+            '        if (sep) {',
+            '          *sep = 0;',
+            '          char* srcP = line;',
+            '          char* dstP = sep + 1;',
+            '          char* nl = strchr(dstP, \'\\n\');',
+            '          if (nl) *nl = 0;',
+            '          soul_copy(srcP, dstP);',
+            '        }',
+            '        break;',
+            '      }',
+            '    }',
+            '    fclose(f);',
+            '',
+            '    // si el indice no corresponde a ninguna linea real, salir',
+            '    if (!found) {',
+            '      break;',
+            '    }',
+            '  }',
+            '',
+            '  if (soul_worker_id == 0) {',
+            'if (soul_progress_action) {',
+            '    soul_progress_end(1);',
+            '}',
+            '  }',
+            '',
+            '  return 1;',
+            '}',            
 
         ];
     }
@@ -1924,7 +2316,7 @@ final class CEmitter
             'dir_close', 'net_close',
             'move', 'append', 'copy',
             'write', 'close', 'remove', 'parallelRun', 'parallelWait',
-            'copyFolder', 'backup',
+            'copyFolder', 'backup', 
         ];
 
 
@@ -1961,6 +2353,162 @@ final class CEmitter
             return "  soul_mkdir((const char*)r[$pi]);";
         }
 
+        if ($name === 'overview') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: overview expects 1 arg and returns struct */';
+            }
+
+            [$path] = $argsOperands;
+            $this->assertReg($path, 'CALL_BUILTIN overview');
+
+            $pi = $this->regIndex($path);
+            $di = $this->regIndex($dstReg);
+
+            return "  r[$di] = soul_overview((const char*)r[$pi]);";
+        }
+
+        if ($name === 'overviewFiles') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: overviewFiles expects 1 arg */';
+            }
+            $ov = $argsOperands[0];
+            $this->assertReg($ov, 'CALL_BUILTIN overviewFiles');
+            $oi = $this->regIndex($ov);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_files(r[$oi]);";
+        }
+
+        if ($name === 'overviewDirs') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: overviewDirs expects 1 arg */';
+            }
+            $ov = $argsOperands[0];
+            $this->assertReg($ov, 'CALL_BUILTIN overviewDirs');
+            $oi = $this->regIndex($ov);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_dirs(r[$oi]);";
+        }
+
+        if ($name === 'overviewSize') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: overviewSize expects 1 arg */';
+            }
+            $ov = $argsOperands[0];
+            $this->assertReg($ov, 'CALL_BUILTIN overviewSize');
+            $oi = $this->regIndex($ov);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_size(r[$oi]);";
+        }
+
+        if ($name === 'overviewExtCount') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR */';
+            }
+            $ov = $argsOperands[0];
+            $this->assertReg($ov, 'CALL_BUILTIN overviewExtCount');
+            $oi = $this->regIndex($ov);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_ext_count(r[$oi]);";
+        }
+
+        if ($name === 'overviewExtName') {
+            if (count($argsOperands) !== 2 || $dstReg === null) {
+                return '  /* ERROR */';
+            }
+            [$ov, $idx] = $argsOperands;
+            $this->assertReg($ov, 'CALL_BUILTIN overviewExtName');
+            $this->assertReg($idx, 'CALL_BUILTIN overviewExtName');
+            $oi = $this->regIndex($ov);
+            $ii = $this->regIndex($idx);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = (uintptr_t)soul_overview_ext_name(r[$oi], (int64_t)r[$ii]);";
+        }
+
+        if ($name === 'overviewExtFiles') {
+            if (count($argsOperands) !== 2 || $dstReg === null) {
+                return '  /* ERROR */';
+            }
+            [$ov, $idx] = $argsOperands;
+            $this->assertReg($ov, 'CALL_BUILTIN overviewExtFiles');
+            $this->assertReg($idx, 'CALL_BUILTIN overviewExtFiles');
+            $oi = $this->regIndex($ov);
+            $ii = $this->regIndex($idx);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_ext_files(r[$oi], (int64_t)r[$ii]);";
+        }
+
+        if ($name === 'overviewExtSize') {
+            if (count($argsOperands) !== 2 || $dstReg === null) {
+                return '  /* ERROR */';
+            }
+            [$ov, $idx] = $argsOperands;
+            $this->assertReg($ov, 'CALL_BUILTIN overviewExtSize');
+            $this->assertReg($idx, 'CALL_BUILTIN overviewExtSize');
+            $oi = $this->regIndex($ov);
+            $ii = $this->regIndex($idx);
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_overview_ext_size(r[$oi], (int64_t)r[$ii]);";
+        }
+        
+        if ($name === 'overviewSummary') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: overviewSummary expects 1 arg */';
+            }
+
+            [$ov] = $argsOperands;
+            $this->assertReg($ov, 'CALL_BUILTIN overviewSummary');
+
+            $oi = $this->regIndex($ov);
+            $di = $this->regIndex($dstReg);
+
+            return "  r[$di] = soul_overviewSummary(r[$oi]);";
+        }
+
+        if ($name === 'walk') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: walk expects 1 arg and returns handle */';
+            }
+
+            [$path] = $argsOperands;
+            $this->assertReg($path, 'CALL_BUILTIN walk');
+
+            $pi = $this->regIndex($path);
+            $di = $this->regIndex($dstReg);
+
+            return "  r[$di] = soul_walk((const char*)r[$pi]);";
+        }
+
+        if ($name === 'walk_next') {
+            if (count($argsOperands) !== 1 || $dstReg === null) {
+                return '  /* ERROR: walk_next expects 1 arg and returns path */';
+            }
+
+            [$h] = $argsOperands;
+            $this->assertReg($h, 'CALL_BUILTIN walk_next');
+
+            $hi = $this->regIndex($h);
+            $di = $this->regIndex($dstReg);
+
+            return
+                "  { const char* __p = (const char*)soul_walk_next(r[$hi]);" .
+                "    if (!__p || __p[0] == 0) r[$di] = (uintptr_t)0;" .
+                "    else r[$di] = (uintptr_t)soul_persist_str(__p);" .
+                "  }";
+        }
+
+        if ($name === 'walk_close') {
+            if (count($argsOperands) !== 1) {
+                return '  /* ERROR: walk_close expects 1 arg */';
+            }
+
+            [$h] = $argsOperands;
+            $this->assertReg($h, 'CALL_BUILTIN walk_close');
+
+            $hi = $this->regIndex($h);
+
+            return "  soul_walk_close(r[$hi]);";
+        }
+
 
         if ($name === 'parallelRun') {
             if (count($argsOperands) !== 1) return '  /* ERROR: parallelRun expects 1 arg */';
@@ -1978,15 +2526,15 @@ final class CEmitter
                 '  soul_parallel_wait((int)r[' . $wi . ']);',
                 '  if (soul_worker_id_fn() != 0) _exit(0);'
             ]);
-        }
+        }  
         
-if ($name === 'print') {
-    if (count($argsOperands) !== 1) return '  /* ERROR: print expects 1 arg */';
-    $arg = $argsOperands[0];
-    $this->assertReg($arg, 'CALL_BUILTIN print');
-    $ai = $this->regIndex($arg);
-    return '  printf("%lld\\n", (long long)(int64_t)r['.$ai.']);';
-}
+        if ($name === 'print') {
+            if (count($argsOperands) !== 1) return '  /* ERROR: print expects 1 arg */';
+            $arg = $argsOperands[0];
+            $this->assertReg($arg, 'CALL_BUILTIN print');
+            $ai = $this->regIndex($arg);
+            return '  printf("%lld\\n", (long long)(int64_t)r['.$ai.']);';
+        }
 
         if ($name === 'printStr') {
             if (count($argsOperands) !== 1) {
@@ -2031,22 +2579,22 @@ if ($name === 'print') {
 
         }
 
-if ($name === 'join') {
-    if (count($argsOperands) !== 2 || $dstReg === null) {
-        return '  /* ERROR: join expects 2 args and returns value */';
-    }
+        if ($name === 'join') {
+            if (count($argsOperands) !== 2 || $dstReg === null) {
+                return '  /* ERROR: join expects 2 args and returns value */';
+            }
 
-    [$a, $b] = $argsOperands;
-    $this->assertReg($a, 'CALL_BUILTIN join');
-    $this->assertReg($b, 'CALL_BUILTIN join');
+            [$a, $b] = $argsOperands;
+            $this->assertReg($a, 'CALL_BUILTIN join');
+            $this->assertReg($b, 'CALL_BUILTIN join');
 
-    $ai = $this->regIndex($a);
-    $bi = $this->regIndex($b);
-    $di = $this->regIndex($dstReg);
+            $ai = $this->regIndex($a);
+            $bi = $this->regIndex($b);
+            $di = $this->regIndex($dstReg);
 
-    // join() DEBE ser path join con "/"
-    return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_path_join((const char*)r[$ai], (const char*)r[$bi]));";
-}
+            // join() DEBE ser path join con "/"
+            return "  r[$di] = (uintptr_t)soul_persist_str((const char*)soul_path_join((const char*)r[$ai], (const char*)r[$bi]));";
+        }
 
         if ($name === 'rmdir') {
             if (count($argsOperands) !== 1) {
@@ -2508,7 +3056,6 @@ if ($name === 'join') {
             return "  soul_write_file((const char*)r[$a0i], (const char*)r[$ti]);";
         }
 
-
         if ($name === 'open') {
             if (count($argsOperands) !== 1 || $dstReg === null) {
                 throw new RuntimeException("CEmitter: builtin open expects 1 arg and returns handle");
@@ -2634,7 +3181,8 @@ if ($name === 'join') {
                 'stat','isfile','isdir','http_get', 'net_read', 'net_close',
                 'open','close', 'remove', 'mtime', 'buildstr', 'mkdir',
                 'workerId', 'workerCount', 'atomicCounter', 'atomicAppend',
-                'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree'
+                'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree', 'overview', 'overviewSummary',
+                'walk', 'walk_next', 'walk_close',
             ], true)) return true;
 
         }
@@ -2744,90 +3292,88 @@ if ($name === 'join') {
         return (int)$m[1];
     }
 
-private function collectOpenHandleVars(IrProgram $program): array
-{
-    $vars = [];
+    private function collectOpenHandleVars(IrProgram $program): array
+    {
+        $vars = [];
 
-    $insts = $program->instructions;
-    $n = count($insts);
+        $insts = $program->instructions;
+        $n = count($insts);
 
-    for ($i = 0; $i < $n; $i++) {
-        $inst = $insts[$i];
+        for ($i = 0; $i < $n; $i++) {
+            $inst = $insts[$i];
 
-        if ($inst->opCode !== OpCode::CALL_BUILTIN) continue;
+            if ($inst->opCode !== OpCode::CALL_BUILTIN) continue;
 
-        $nameOp = $inst->operands[0] ?? null;
-        if (!($nameOp instanceof IrLit) || $nameOp->value !== 'open') continue;
-
-        // open(path) devuelve en el último operando (dstReg)
-        $dstReg = $inst->operands[count($inst->operands) - 1] ?? null;
-        if (!($dstReg instanceof IrReg)) continue;
-
-        // patrón típico: CALL_BUILTIN open ... <dstReg>  seguido de STORE_VAR <dstReg> <$var>
-        if ($i + 1 < $n) {
-            $next = $insts[$i + 1];
-            if ($next->opCode === OpCode::STORE_VAR) {
-                [$src, $var] = $next->operands;
-                if ($src instanceof IrReg && $var instanceof IrVar && $src->name === $dstReg->name) {
-                    $vars[$var->name] = true;
-                }
-            }
-        }
-    }
-
-    return $vars; // set de nombres de variable
-}
-
-private function regIsWriteHandle(IrProgram $program, int $ip, IrReg $reg, array $openHandleVars): bool
-{
-    $target = $reg->name;
-    $insts = $program->instructions;
-
-    for ($j = $ip - 1; $j >= 0; $j--) {
-        $inst = $insts[$j];
-
-        // LOAD_VAR <$var> <dstReg>
-        if ($inst->opCode === OpCode::LOAD_VAR) {
-            [$var, $dst] = $inst->operands;
-            if ($dst instanceof IrReg && $dst->name === $target && $var instanceof IrVar) {
-                return isset($openHandleVars[$var->name]);
-            }
-        }
-
-        // CALL_BUILTIN open ... <dstReg>
-        if ($inst->opCode === OpCode::CALL_BUILTIN) {
             $nameOp = $inst->operands[0] ?? null;
-            if ($nameOp instanceof IrLit && $nameOp->value === 'open') {
-                $dst = $inst->operands[count($inst->operands) - 1] ?? null;
-                if ($dst instanceof IrReg && $dst->name === $target) {
-                    return true;
+            if (!($nameOp instanceof IrLit) || $nameOp->value !== 'open') continue;
+
+            // open(path) devuelve en el último operando (dstReg)
+            $dstReg = $inst->operands[count($inst->operands) - 1] ?? null;
+            if (!($dstReg instanceof IrReg)) continue;
+
+            // patrón típico: CALL_BUILTIN open ... <dstReg>  seguido de STORE_VAR <dstReg> <$var>
+            if ($i + 1 < $n) {
+                $next = $insts[$i + 1];
+                if ($next->opCode === OpCode::STORE_VAR) {
+                    [$src, $var] = $next->operands;
+                    if ($src instanceof IrReg && $var instanceof IrVar && $src->name === $dstReg->name) {
+                        $vars[$var->name] = true;
+                    }
                 }
             }
         }
 
-        // LOAD_CONST <lit> <dstReg> (si pisa el registro, ya no es handle)
-        if ($inst->opCode === OpCode::LOAD_CONST) {
-            [$lit, $dst] = $inst->operands;
-            if ($dst instanceof IrReg && $dst->name === $target) {
-                return false;
-            }
-        }
-
-        // Operaciones que escriben dst (ADD/SUB/.../CMP/... etc) si pisan target => ya no es handle
-        // (si quieres, añade más casos; con esto suele bastar)
-        if (in_array($inst->opCode, [OpCode::ADD,OpCode::SUB,OpCode::MUL,OpCode::DIV,OpCode::MOD,
-                                    OpCode::CMP_LT,OpCode::CMP_LE,OpCode::CMP_GT,OpCode::CMP_GE,OpCode::CMP_EQ,OpCode::CMP_NE], true)) {
-            $dst = $inst->operands[2] ?? null;
-            if ($dst instanceof IrReg && $dst->name === $target) {
-                return false;
-            }
-        }
+        return $vars; // set de nombres de variable
     }
 
-    return false;
-}
+    private function regIsWriteHandle(IrProgram $program, int $ip, IrReg $reg, array $openHandleVars): bool
+    {
+        $target = $reg->name;
+        $insts = $program->instructions;
 
+        for ($j = $ip - 1; $j >= 0; $j--) {
+            $inst = $insts[$j];
 
+            // LOAD_VAR <$var> <dstReg>
+            if ($inst->opCode === OpCode::LOAD_VAR) {
+                [$var, $dst] = $inst->operands;
+                if ($dst instanceof IrReg && $dst->name === $target && $var instanceof IrVar) {
+                    return isset($openHandleVars[$var->name]);
+                }
+            }
+
+            // CALL_BUILTIN open ... <dstReg>
+            if ($inst->opCode === OpCode::CALL_BUILTIN) {
+                $nameOp = $inst->operands[0] ?? null;
+                if ($nameOp instanceof IrLit && $nameOp->value === 'open') {
+                    $dst = $inst->operands[count($inst->operands) - 1] ?? null;
+                    if ($dst instanceof IrReg && $dst->name === $target) {
+                        return true;
+                    }
+                }
+            }
+
+            // LOAD_CONST <lit> <dstReg> (si pisa el registro, ya no es handle)
+            if ($inst->opCode === OpCode::LOAD_CONST) {
+                [$lit, $dst] = $inst->operands;
+                if ($dst instanceof IrReg && $dst->name === $target) {
+                    return false;
+                }
+            }
+
+            // Operaciones que escriben dst (ADD/SUB/.../CMP/... etc) si pisan target => ya no es handle
+            // (si quieres, añade más casos; con esto suele bastar)
+            if (in_array($inst->opCode, [OpCode::ADD,OpCode::SUB,OpCode::MUL,OpCode::DIV,OpCode::MOD,
+                                        OpCode::CMP_LT,OpCode::CMP_LE,OpCode::CMP_GT,OpCode::CMP_GE,OpCode::CMP_EQ,OpCode::CMP_NE], true)) {
+                $dst = $inst->operands[2] ?? null;
+                if ($dst instanceof IrReg && $dst->name === $target) {
+                    return false;
+                }
+            }
+        }
+
+        return false;
+    }
 
     private function cVar(string $name): string
     {
