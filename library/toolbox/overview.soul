@@ -6,7 +6,8 @@ uso: soul run test_overview.soul --folder {ruta}
 
 str folderOrigen = arg("--folder")
 str folder = concat("/home/dmin/dev/soulc/", folderOrigen)
-folder = "/home"
+
+printStr(folder)
 
 overviewinfo ov = overview(folder)
 str txt = overviewSummary(ov)

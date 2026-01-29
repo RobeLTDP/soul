@@ -1,0 +1,14 @@
+##
+Prueba básica del builtin overview
+Cuenta ficheros y carpetas recursivamente
+uso: soul run test_overview.soul --folder {ruta}
+##
+
+str folderOrigen = arg("--folder")
+str folder = concat("/home/dmin/dev/soulc/", folderOrigen)
+
+printStr(folder)
+
+overviewinfo ov = overview(folder)
+str txt = overviewSummary(ov)
+printStr(txt)

@@ -1,6 +1,6 @@
 ##
-Crear un log en una carpeta con los nombres de los primeros ficheros
-Uso: soul run log.soul --folder {carpeta} --ficheros {100}
+Create log for a tree structure
+Uso: soul run log.soul --folder {carpeta}
 ##
 
 str folder = arg("--folder")
@@ -8,22 +8,14 @@ if folder == "":
     printStr("ERROR: missing --folder")
     return
 
-str myFolder = concat("/home/dmin/dev/soulc/", folder)
-diriter it = listdir(myFolder)
-printStr(myFolder)
+str base = concat("/home/dmin/dev/soulc/", folder)
+diriter it = listdir(base)
 
-str esteFolder = concat("/home/dmin/dev/soulc/", folder)
-str ruta = concat(esteFolder, "/log.json")
-printStr(ruta)
+str out = concat(base, "/log.json")
+int f = open(out)
 
-int f = open(ruta)
 write(f, "[")
 
-# --ficheros llega como string → convertir a int
-str maxStr = arg("--ficheros", "0")
-int max = toInt(maxStr)
-
-int c = 0
 str sep = ""
 
 while true:
@@ -31,30 +23,47 @@ while true:
     if name == 0:
         break
 
-    str fullPath = concat(myFolder, "/")
-    fullPath = concat(fullPath, name)
+    str full = join(base, name)
 
-    int ts = mtime(fullPath)
-    str tsStr = toStr(ts)
+    statinfo st = stat(full)
+    if st == 0:
+        continue
 
-    str line = "{name:"
-    line = concat(line, name)
-    line = concat(line, ",mtime:")
-    line = concat(line, tsStr)
-    line = concat(line, "}")
+    if isdir(st):
+        int ts = mtime(full)
 
-    write(f, sep)
-    write(f, line)
+        str p0 = json_pair_str("type", "folder")
+        str p1 = json_pair_str("name", name)
+        str p2 = json_pair_int("mtime", ts)
+        str p3 = json_pair_str("location", folder)
 
-    sep = ","
-    c = c + 1
+        str obj = json_object(p0, p1, p2, p3)
 
-    if max != 0:
-        if c == max:
-            break
+        write(f, sep)
+        write(f, obj)
+
+        sep = ","
+
+    if isfile(st):
+        int ts = mtime(full)
+
+        str p0 = json_pair_str("type", "file")
+        str p1 = json_pair_str("name", name)
+        str p2 = json_pair_int("mtime", ts)
+        str p3 = json_pair_str("location", folder)
+
+        str obj = json_object(p0, p1, p2, p3)
+
+        write(f, sep)
+        write(f, obj)
+
+        sep = ","
+
+end
 
 write(f, "]")
 close(f)
-
 dir_close(it)
-print(c)
+
+printStr("JSON written to:")
+printStr(out)

@@ -1,25 +1,25 @@
 ##
-Copia incremental entre carpetas (backup)
-Uso: soul run backupCarpetas.soul --folderOrigen {carpeta} --folderDestino {carpeta}
+Incremental backup for a source folder
+Usage: soul run backup.soul --folderSrc {source_folder} --folderDst {destination_folder}
 ##
 
-str folderOrigen  = arg("--folderOrigen")
-str folderDestino = arg("--folderDestino")
+str folderSrc = arg("--folderSrc")
+str folderDst = arg("--folderDst")
 
-str src = concat("/home/dmin/dev/soulc/", folderOrigen)
-str dst = concat("/home/dmin/dev/soulc/", folderDestino)
+str src = concat("/home/dmin/dev/soulc/", folderSrc)
+str dst = concat("/home/dmin/dev/soulc/", folderDst)
 
-printStr("Iniciando backup incremental")
+printStr("Starting backup...")
 
-printStr("ORIGEN:")
+printStr("Source:")
 printStr(src)
-printStr("DESTINO:")
+printStr("Destination:")
 printStr(dst)
 
-# Crear carpeta destino si no existe
+# Create destination folder
 mkdir(dst)
 
-# Ejecutar backup incremental
+# Execute backup
 backup(src, dst)
 
-printStr("Backup finalizado")
+printStr("Backup finished.")

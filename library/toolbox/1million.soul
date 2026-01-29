@@ -1,0 +1,69 @@
+##
+Create 1 million txt files in 10 different folders
+Usage: soul run 1million.soul --folder {folder_name}
+##
+
+str srcFolder = arg("--folder")
+str folder = concat("/home/dmin/dev/soulc/", srcFolder)
+str base = concat(folder, "/")
+
+if base == "":
+    printStr("ERROR: missing --folder")
+    return
+
+mkdir(base)
+
+##
+Configuration
+##
+int numDirs = 10
+int filesPerDir = 100000
+
+printStr("Base Folder:")
+printStr(base)
+printStr("Folder:")
+print(numDirs)
+printStr("Files per folder:")
+print(filesPerDir)
+printStr("")
+
+##
+Creating subfolders...
+##
+int d = 1
+while d <= numDirs:
+    str dirName = concat("dir", toStr(d))
+    str dirPath = concat(base, dirName)
+    mkdir(dirPath)
+    d = d + 1
+
+##
+Creating Files...
+##
+int total = 0
+d = 1
+
+while d <= numDirs:    
+    str dirName = concat("dir", toStr(d))
+    str dirPath = concat(base, dirName)
+
+    int i = 0
+    while i < filesPerDir:
+        str name = concat("file_", toStr(i))
+        name = concat(name, ".txt")
+        
+        str path = concat(dirPath, "/")
+        path = concat(path, name)
+
+        file h = open(path)
+        write(h, "File created by Soul.")
+        close(h)
+
+        i = i + 1
+        total = total + 1
+
+    d = d + 1
+
+printStr("")
+printStr("Finished.")
+print(total)

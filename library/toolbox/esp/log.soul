@@ -1,0 +1,60 @@
+##
+Crear un log en una carpeta con los nombres de los primeros ficheros
+Uso: soul run log.soul --folder {carpeta} --ficheros {100}
+##
+
+str folder = arg("--folder")
+if folder == "":
+    printStr("ERROR: missing --folder")
+    return
+
+str myFolder = concat("/home/dmin/dev/soulc/", folder)
+diriter it = listdir(myFolder)
+printStr(myFolder)
+
+str esteFolder = concat("/home/dmin/dev/soulc/", folder)
+str ruta = concat(esteFolder, "/log.json")
+printStr(ruta)
+
+int f = open(ruta)
+write(f, "[")
+
+# --ficheros llega como string → convertir a int
+str maxStr = arg("--ficheros", "0")
+int max = toInt(maxStr)
+
+int c = 0
+str sep = ""
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    str fullPath = concat(myFolder, "/")
+    fullPath = concat(fullPath, name)
+
+    int ts = mtime(fullPath)
+    str tsStr = toStr(ts)
+
+    str line = "{name:"
+    line = concat(line, name)
+    line = concat(line, ",mtime:")
+    line = concat(line, tsStr)
+    line = concat(line, "}")
+
+    write(f, sep)
+    write(f, line)
+
+    sep = ","
+    c = c + 1
+
+    if max != 0:
+        if c == max:
+            break
+
+write(f, "]")
+close(f)
+
+dir_close(it)
+print(c)

@@ -3,5 +3,5 @@ Test básico de Soul
 #
 
 bool x = true
-if x = true:
+if x:
     printStr("hola Mundo")

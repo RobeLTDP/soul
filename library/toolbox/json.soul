@@ -1,0 +1,12 @@
+##
+JSON encode test
+##
+
+int files = 10170
+int dirs  = 15
+int totalSize = 9656350785
+
+str json = json_encode("files", files, "dirs", dirs, "size", totalSize)
+
+printStr("JSON output:")
+printStr(json)

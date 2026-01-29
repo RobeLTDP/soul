@@ -1,6 +1,6 @@
 ##
-Borra recursivamente todos los ficheros y subdirectorios de una carpeta.
-Uso:  soul run borrarCarpetas.soul --folder "library/carpeta" --password 'CONFIRM_DELETE'
+Deletes a folder and all its contents
+Usage:  soul run deleteFolder.soul --folder "[folder_name]" --password 'CONFIRM_DELETE'
 ##
 
 str folder = arg("--folder")
@@ -8,7 +8,7 @@ str password = arg("--password")
 
 bool ok = true
 
-if password == "CONFIRM_DELETE":
+if startswith(password, "CONFIRM_DELETE"):
     printStr(password)
     printStr("Password protection confirmed")
     ok = true
