@@ -389,6 +389,10 @@ class Analyzer
             "startswith" => "bool",
             "endswith"   => "bool",
             "buildstr"   => "str",
+            "json_encode"  => "str",
+            "json_pair_str" => "str",
+            "json_pair_int" => "str",
+            "json_object"   => "str",
 
             // IO
             "open"   => "int",
