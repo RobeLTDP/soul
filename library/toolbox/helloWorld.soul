@@ -1,9 +1,0 @@
-##
-Basic test for Soul
-##
-
-bool x = true
-if x:
-    printStr("Hello World!")
-    printStr("Soul is alive and ready!")
-    printStr(" ")

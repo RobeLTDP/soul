@@ -248,6 +248,7 @@ class Parser
 
     private function parseBlock(): array
     {
+        $this->skipNewlines();   
         $this->consume("INDENT", "Se esperaba INDENT para iniciar bloque");
 
         $statements = [];

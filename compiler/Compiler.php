@@ -6,7 +6,7 @@ require_once SOUL_ROOT . '/semantic/Analyzer.php';
 require_once SOUL_ROOT . '/compiler/Lowerer.php';
 require_once SOUL_ROOT . '/compiler/CEmitter.php';
 require_once SOUL_ROOT . '/compiler/Optimizer.php';
-
+require_once SOUL_ROOT . '/ir/IrProgram.php';
 
 // Si tu Lowerer/CEmitter están en el mismo directorio "compiler", ajusta require_once según tu estructura real.
 // Aquí asumo:
@@ -34,7 +34,7 @@ final class Compiler
      * @param bool $runGcc si true, compila con gcc
      * @return array{cPath:string, binPath:?string}
      */
-    public function compileFile(string $inputPath, string $outDir, bool $runGcc = true): array
+    public function compileFile(string $inputPath, string $outDir, bool $runGcc = true, bool $dockerMode = false): array
     {
         if (!is_file($inputPath)) {
             throw new RuntimeException("No existe el fichero: $inputPath");
@@ -45,17 +45,19 @@ final class Compiler
             throw new RuntimeException("No se pudo leer: $inputPath");
         }
 
-        if (!is_dir($outDir)) {
-            if (!mkdir($outDir, 0777, true) && !is_dir($outDir)) {
-                throw new RuntimeException("No se pudo crear el directorio de salida: $outDir");
-            }
-        }
-
         // ---------------------------------------------------------
         // 1. Calcular ruta relativa dentro de /library
         // ---------------------------------------------------------
         $inputReal = realpath($inputPath);
         $libraryRoot = realpath(SOUL_ROOT . '/library');
+
+        if ($inputReal === false) {
+            throw new RuntimeException("No se pudo resolver la ruta real de entrada: $inputPath");
+        }
+
+        if ($libraryRoot === false) {
+            throw new RuntimeException("No se pudo resolver la ruta de SOUL_ROOT/library");
+        }
 
         if (str_starts_with($inputReal, $libraryRoot)) {
             // Ej: /home/.../library/examples/move.soul → /examples/
@@ -72,9 +74,22 @@ final class Compiler
         $baseName = pathinfo($inputPath, PATHINFO_FILENAME);
 
         // ---------------------------------------------------------
-        // 2. Carpeta destino final dentro de /out
+        // 2. Carpeta destino final
         // ---------------------------------------------------------
-        $finalOutDir = rtrim($outDir, '/') . ($relativeDir !== '' ? '/' . $relativeDir : '');
+        if ($dockerMode) {
+            // Para Docker, separar completamente del build normal
+            // Ej: /out/docker-build/analyzer/
+            $finalOutDir = SOUL_ROOT . '/out/docker-build/' . $baseName;
+        } else {
+            // Build normal: respetar outDir y la estructura relativa dentro de /library
+            if (!is_dir($outDir)) {
+                if (!mkdir($outDir, 0777, true) && !is_dir($outDir)) {
+                    throw new RuntimeException("No se pudo crear el directorio de salida: $outDir");
+                }
+            }
+
+            $finalOutDir = rtrim($outDir, '/') . ($relativeDir !== '' ? '/' . $relativeDir : '');
+        }
 
         if (!is_dir($finalOutDir)) {
             if (!mkdir($finalOutDir, 0777, true) && !is_dir($finalOutDir)) {
@@ -83,11 +98,10 @@ final class Compiler
         }
 
         // ---------------------------------------------------------
-        // 3. Rutas finales de C y binario (mirror 1:1)
+        // 3. Rutas finales de C y binario
         // ---------------------------------------------------------
-        $cPath  = $finalOutDir . '/' . $baseName . '.c';
+        $cPath   = $finalOutDir . '/' . $baseName . '.c';
         $binPath = $finalOutDir . '/' . $baseName;
-
 
         // Frontend
         echo "== LEXER ==\n";
@@ -106,7 +120,6 @@ final class Compiler
             throw new RuntimeException($msg);
         }
 
-
         echo "== ANALYZER ==\n";
         $analyzer = new Analyzer();
         $analyzer->analyze($ast);
@@ -117,11 +130,13 @@ final class Compiler
             $msg = "SEMANTIC ERRORS:\n" . implode("\n", $semErrors);
             throw new RuntimeException($msg);
         }
+
         // LOWERER
         echo "== LOWERER ==\n";
         $lowerer = new Lowerer();
         $ir = $lowerer->lower($ast);
         echo "Lowerer OK\n";
+
         // --------------------------------------------------
         // DUMP IR
         // --------------------------------------------------
@@ -133,21 +148,25 @@ final class Compiler
                 $ops = [];
 
                 foreach ($inst->operands as $o) {
-                    if ($o instanceof IrReg)        $ops[] = $o->name;
-                    elseif ($o instanceof IrVar)    $ops[] = '$'.$o->name;
-                    elseif ($o instanceof IrLit)    $ops[] = json_encode($o->value);
-                    elseif ($o instanceof IrLabelRef) $ops[] = '|'.$o->name.'|';
-                    else $ops[] = '<?>';
+                    if ($o instanceof IrReg) {
+                        $ops[] = $o->name;
+                    } elseif ($o instanceof IrVar) {
+                        $ops[] = '$' . $o->name;
+                    } elseif ($o instanceof IrLit) {
+                        $ops[] = json_encode($o->value);
+                    } elseif ($o instanceof IrLabelRef) {
+                        $ops[] = '|' . $o->name . '|';
+                    } else {
+                        $ops[] = '<?>';
+                    }
                 }
 
                 printf("%03d: %-12s %s\n", $i, $op, implode(", ", $ops));
             }
 
             echo "===== END IR DUMP =====\n";
-            // No seguimos a optimizer/emitter/gcc
             return ['cPath' => null, 'binPath' => null];
         }
-
 
         // OPTIMIZER sobre IR
         echo "== OPTIMIZER ==\n";
@@ -164,12 +183,12 @@ final class Compiler
             exit(0);
         }
 
-
         // EMITTER
         echo "== EMITTER ==\n";
         $emitter = new CEmitter();
         $cCode = $emitter->emit($ir);
         echo "Emitter OK\n";
+
         // --------------------------------------------------
         // DUMP C CODE
         // --------------------------------------------------
@@ -178,33 +197,55 @@ final class Compiler
             echo $cCode;
             echo "\n===== END C DUMP =====\n";
 
-            // No seguimos a escribir fichero ni a gcc
             return ['cPath' => null, 'binPath' => null];
         }
-
 
         if (file_put_contents($cPath, $cCode) === false) {
             throw new RuntimeException("No se pudo escribir: $cPath");
         }
 
-        // gcc
         if ($runGcc) {
-            $this->compileWithGcc($cPath, $binPath);
+            $this->compileWithGcc($cPath, $binPath, $dockerMode);
+
+            if ($dockerMode) {
+                $this->generateDockerfile($binPath, dirname($binPath));
+            }
+
             return ['cPath' => $cPath, 'binPath' => $binPath];
         }
 
         return ['cPath' => $cPath, 'binPath' => null];
     }
 
-    private function compileWithGcc(string $cPath, string $binPath): void
+    private function compileWithGcc(string $cPath, string $binPath, bool $dockerMode = false): void
     {
-        // Importante: esto asume que ejecutas el CLI dentro de Linux/WSL.
-        // En Windows sin gcc en PATH, fallará (y está bien).
-        $cmd = sprintf(
-            'gcc -O3 %s -o %s 2>&1',
-            escapeshellarg($cPath),
-            escapeshellarg($binPath)
-        );
+        if ($dockerMode) {
+
+            $musl = trim(shell_exec('which musl-gcc 2>/dev/null'));
+
+            if ($musl === '') {
+                throw new RuntimeException(
+                    "musl-gcc no encontrado. Instala musl-tools para usar --docker."
+                );
+            }
+
+            // build estático para scratch
+            $cmd = sprintf(
+                '%s -O3 -static -s %s -o %s 2>&1',
+                escapeshellcmd($musl),
+                escapeshellarg($cPath),
+                escapeshellarg($binPath)
+            );
+
+        } else {
+
+            // comportamiento actual intacto
+            $cmd = sprintf(
+                'gcc -O3 %s -o %s 2>&1',
+                escapeshellarg($cPath),
+                escapeshellarg($binPath)
+            );
+        }
 
         $output = [];
         $exitCode = 0;
@@ -212,8 +253,69 @@ final class Compiler
 
         if ($exitCode !== 0) {
             throw new RuntimeException(
-                "gcc falló (exit=$exitCode):\n" . implode("\n", $output)
+                "Compiler failed (exit=$exitCode):\n" . implode("\n", $output)
             );
         }
+
+        chmod($binPath, 0755);
     }
+
+private function generateDockerfile(string $binPath, string $outDir): void
+{
+    $binName = basename($binPath);
+
+    $dockerfile = <<<DOCKER
+FROM scratch
+
+WORKDIR /app
+
+COPY {$binName} /app/{$binName}
+
+ENTRYPOINT ["/app/{$binName}"]
+DOCKER;
+
+    $path = $outDir . '/Dockerfile';
+
+    file_put_contents($path, $dockerfile);
+
+    echo "Dockerfile generado en: {$path}\n";
+}
+    
+    public function compileToIrOnly(string $inputPath): IrProgram
+    {
+        $code = file_get_contents($inputPath);
+        if ($code === false) {
+            throw new RuntimeException("No se pudo leer: $inputPath");
+        }
+
+        // Lexer
+        $lexer = new Lexer($code);
+        $tokens = $lexer->tokenize();
+
+        // Parser
+        $parser = new Parser($tokens);
+        $ast = $parser->parseProgram();
+
+        $parseErrors = $parser->getErrors();
+        if (!empty($parseErrors)) {
+            throw new RuntimeException("PARSER ERRORS:\n" . implode("\n", $parseErrors));
+        }
+
+        // Analyzer
+        $analyzer = new Analyzer();
+        $analyzer->analyze($ast);
+
+        $semErrors = $analyzer->getErrors();
+        if (!empty($semErrors)) {
+            throw new RuntimeException("SEMANTIC ERRORS:\n" . implode("\n", $semErrors));
+        }
+
+        // Lower → IR
+        $lowerer = new Lowerer();
+        $ir = $lowerer->lower($ast);
+
+        return $ir;
+    }
+
+
 }

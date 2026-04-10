@@ -6,12 +6,14 @@ define('SOUL_ROOT', __DIR__);
 $dumpIR = in_array('--dump-ir', $argv, true);
 $dumpC  = in_array('--dump-c',  $argv, true);
 $trace  = in_array('--trace',   $argv, true);
+$docker = in_array('--docker', $argv, true);
 
 require_once __DIR__ . '/compiler/Compiler.php';
 require_once __DIR__ . '/lexer/Lexer.php';
 require_once __DIR__ . '/parser/Parser.php';
 require_once __DIR__ . '/semantic/Analyzer.php';
 require_once __DIR__ . '/planner/PlanAnalyzer.php';
+require_once __DIR__ . '/planner/PlanRecorder.php';
 require_once __DIR__ . '/cli/LibraryInspector.php';
 require_once SOUL_ROOT . '/compiler/SoulProgramCreator.php';
 require_once SOUL_ROOT . '/compiler/ProgramRunner.php';
@@ -23,6 +25,40 @@ require_once SOUL_ROOT . '/cli/HelpScreen.php';
 /* ----------------------------------------------------------
 |  HELP / USAGE
 -----------------------------------------------------------*/
+
+function resolveSoulScript(string $name): ?string
+{
+    $candidates = [];
+
+    // tal cual
+    $candidates[] = $name;
+
+    // con extensión
+    if (!str_ends_with($name, '.soul')) {
+        $candidates[] = $name . '.soul';
+    }
+
+    // rutas típicas
+    $baseDirs = [
+        getcwd(),
+        SOUL_ROOT . '/scripts',
+        SOUL_ROOT . '/library/scripts',
+        SOUL_ROOT . '/library/toolbox',
+    ];
+
+    foreach ($baseDirs as $dir) {
+        foreach ($candidates as $file) {
+            $path = $dir . '/' . $file;
+            if (is_file($path)) {
+                return realpath($path);
+            }
+        }
+    }
+
+    return null;
+}
+
+
 
 function usage(): void
 {
@@ -89,18 +125,52 @@ function findBinaryInOut(string $name): ?string
         return null;
     }
 
+    $latestPath = null;
+    $latestTime = 0;
+
     $it = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($outRoot, FilesystemIterator::SKIP_DOTS)
     );
 
     foreach ($it as $file) {
         if (!$file->isFile()) continue;
+        if ($file->getBasename() !== $name) continue;
 
-        if ($file->getBasename() === $name) {
-            return $file->getPathname();
+        $mtime = $file->getMTime();
+
+        if ($mtime > $latestTime) {
+            $latestTime = $mtime;
+            $latestPath = $file->getPathname();
         }
     }
-    return null;
+
+    return $latestPath;
+}
+
+
+function findBinaryForScript(string $scriptPath): ?string
+{
+    $root = realpath(SOUL_ROOT);
+    $scriptPath = realpath($scriptPath);
+
+    if ($root === false || $scriptPath === false) {
+        return null;
+    }
+
+    // asegurar que el script está dentro del proyecto
+    if (!str_starts_with($scriptPath, $root . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+
+    // obtener ruta relativa correcta
+    $relative = substr($scriptPath, strlen($root) + 1);
+
+    // quitar extensión
+    $relative = preg_replace('/\.soul$/', '', $relative);
+
+    $binPath = $root . '/out/' . $relative;
+
+    return is_file($binPath) ? $binPath : null;
 }
 
 
@@ -111,33 +181,31 @@ function findBinaryInOut(string $name): ?string
 if ($command === 'plan') {
 
     if ($input === null) {
+        echo "ERROR: Missing script for plan.\n";
         usage();
         exit(1);
     }
 
-    $code = file_get_contents($input);
-    if ($code === false) {
-        throw new RuntimeException("Cannot read file: $input");
+    $scriptPath = resolveSoulScript($input);
+
+    if ($scriptPath === null) {
+        echo "ERROR: Script not found: $input\n";
+        exit(1);
     }
 
-    $lexer  = new Lexer($code);
-    $tokens = $lexer->tokenize();
+    $compiler = new Compiler();
+    $ir = $compiler->compileToIrOnly($scriptPath);
 
-    $parser = new Parser($tokens);
-    $ast    = $parser->parseProgram();
+    $recorder = new PlanRecorder();
 
-    $analyzer = new Analyzer();
-    $analyzer->analyze($ast);
+    $runner = new IrRunner();
+    $runner->run($ir, trace: false, planMode: true, recorder: $recorder);
 
-    if ($errors = $analyzer->getErrors()) {
-        throw new RuntimeException("SEMANTIC ERRORS:\n" . implode("\n", $errors));
-    }
-
-    $planner = new PlanAnalyzer();
-    $planner->analyze($ast);
+    $recorder->printSummary();
 
     exit(0);
 }
+
 
 
 /* ----------------------------------------------------------
@@ -187,13 +255,14 @@ if ($command === 'run') {
     }
 
     // 3) Buscar el binario en todo el árbol /out
-    $bin = findBinaryInOut($name);
+    $scriptPath = resolveSoulScript($name);
 
-    if ($bin === null) {
-        echo "ERROR: Binary not found for '$name'.\n";
-        echo "Use: soul build <file.soul> first.\n";
+    if (!$scriptPath) {
+        echo "ERROR: Script not found: $name\n";
         exit(1);
     }
+
+    $bin = findBinaryInOut($name);
 
     @chmod($bin, 0755);
     $cmd = escapeshellarg($bin);
@@ -303,10 +372,18 @@ if ($command === 'build') {
         exit(1);
     }
 
+    $scriptPath = resolveSoulScript($input);
+
+    if ($scriptPath === null) {
+        echo "ERROR: Script not found: $input\n";
+        exit(1);
+    }
+
     $outDir = __DIR__ . '/out';
 
     $compiler = new Compiler(dumpIR: $dumpIR, dumpC: $dumpC, trace: $trace);
-    $result = $compiler->compileFile($input, $outDir, runGcc: !$dumpIR && !$dumpC);
+    //$result = $compiler->compileFile($scriptPath, $outDir, runGcc: !$dumpIR && !$dumpC);
+    $result = $compiler->compileFile($scriptPath,    $outDir,    runGcc: !$dumpIR && !$dumpC,    dockerMode: $docker);
 
     echo "BUILD OK\n";
     echo "C:   {$result['cPath']}\n";
@@ -367,27 +444,20 @@ if ($command === 'programs') {
 |  DEFAULT: build .soul
 -----------------------------------------------------------*/
 
-$inputFile = $command;
+$scriptPath = resolveSoulScript($command);
 
-if (!str_ends_with($inputFile, '.soul')) {
-    echo "ERROR: No parece un fichero .soul: $inputFile\n";
+if ($scriptPath === null) {
+    echo "ERROR: Script not found: $command\n";
     usage();
     exit(1);
-}
-
-if ($trace) {
-    require_once SOUL_ROOT . '/compiler/IrRunner.php';
-    $runner = new IrRunner();
-    echo "== TRACE EXECUTION ==\n";
-    $runner->run($ir, trace: true);
-    exit(0);
 }
 
 $outDir = $argv[2] ?? (__DIR__ . '/out');
 
 try {
     $compiler = new Compiler(dumpIR: $dumpIR, dumpC: $dumpC, trace: $trace);
-    $result = $compiler->compileFile($input, $outDir, runGcc: !$dumpIR && !$dumpC);
+    //$result = $compiler->compileFile($scriptPath, $outDir, runGcc: !$dumpIR && !$dumpC);
+    $result = $compiler->compileFile(    $scriptPath,    $outDir,    runGcc: !$dumpIR && !$dumpC,    dockerMode: $docker);
 
     echo "OK\n";
     echo "C:   {$result['cPath']}\n";

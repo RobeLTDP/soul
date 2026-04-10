@@ -9,9 +9,36 @@ final class IrRunner
     private array $vars = [];
     private array $labels = [];
     private int   $ip = 0;
+    private bool $planMode = false;
+    private ?PlanRecorder $recorder = null;
+    private int $nextHandle = 1;
+    private array $walkIters = []; // handle => array{list: array, idx: int}
+    private int $maxSteps = 5000000; 
+    private array $builtinsWithReturn = [
+        'arg'       => true,
+        'join'      => true,
+        'concat'    => true,
+        'length'    => true,
+        'walk'      => true,
+        'walk_next' => true,
+        'stat'      => true,
+        'workerId'  => true,
+        'dir_next'  => true,
+    ];
 
-    public function run(IrProgram $program, bool $trace = false): void
+
+    public function run(IrProgram $program, bool $trace = false, bool $planMode = false, ?PlanRecorder $recorder = null)
     {
+        $this->planMode = $planMode;
+        $this->recorder = $recorder;
+        $this->regs = [];
+        $this->vars = [];
+        $this->labels = [];
+        $this->ip = 0;
+        $this->nextHandle = 1;
+        $this->walkIters = [];        
+        
+            
         // Crear diccionario de labels → índice de instrucción
         foreach ($program->instructions as $i => $inst) {
             if ($inst->opCode === OpCode::LABEL) {
@@ -23,17 +50,23 @@ final class IrRunner
         $insts = $program->instructions;
         $cnt   = count($insts);
 
+
+        $steps = 0;
         while ($this->ip < $cnt) {
-            $inst = $insts[$this->ip];
-
-            if ($trace) {
-                $this->traceInstruction($inst);
+            if ($this->planMode && ++$steps > $this->maxSteps) {
+                throw new RuntimeException("PLAN aborted: exceeded max steps ($this->maxSteps)");
             }
+                $inst = $insts[$this->ip];
 
-            $this->execute($inst);
+                if ($trace) {
+                    $this->traceInstruction($inst);
+                }
 
-            $this->ip++;
+                $this->execute($inst);
+
+                $this->ip++;
         }
+
     }
 
     private function traceInstruction($inst): void
@@ -174,13 +207,519 @@ final class IrRunner
                 }
                 break;
 
+
             case OpCode::CALL_BUILTIN:
-                // No ejecutamos builtins reales, solo mostramos que se llamarían
-                echo "[builtin] " . $inst->operands[0]->value . "\n";
+
+                $ops = $inst->operands;
+
+                $nameLit = $ops[0];
+                $name = $nameLit->value;
+
+                $dst = null;
+
+                // SOLO hay dst si el builtin devuelve valor (y el último operando es un registro)
+                $mayHaveDst = isset($this->builtinsWithReturn[$name]);
+                if ($mayHaveDst && end($ops) instanceof IrReg) {
+                    $dst = array_pop($ops); // quita dst real
+                }
+
+                // args = lo que quede después del name
+                $args = array_slice($ops, 1);
+
+                $values = [];
+                foreach ($args as $a) {
+                    if ($a instanceof IrReg) {
+                        $values[] = $this->regs[$a->name] ?? null;
+                    } elseif ($a instanceof IrLit) {
+                        $values[] = $a->value;
+                    } elseif ($a instanceof IrVar) {
+                        $values[] = $this->vars[$a->name] ?? null;
+                    } else {
+                        $values[] = null;
+                    }
+                }
+
+                $result = $this->planMode
+                    ? $this->simulateBuiltin($name, $values)
+                    : $this->executeBuiltin($name, $values);
+
+                if ($dst instanceof IrReg) {
+                    $this->regs[$dst->name] = $result;
+                }
+
                 break;
+
+
+
+
 
             case OpCode::LABEL:
                 break;
         }
     }
+
+private function simulateBuiltin1(string $name, array $args)
+{
+    if (!$this->recorder) return null;
+
+    switch ($name) {
+
+        case 'copy':
+            $src = $args[0] ?? null;
+            $dst = $args[1] ?? null;
+            $size = @is_file($src) ? @filesize($src) : 0;
+            $this->recorder->record('COPY', compact('src','dst','size'));
+            return null;
+
+        case 'move':
+            $src = $args[0] ?? null;
+            $dst = $args[1] ?? null;
+
+            $size = is_file($src) ? filesize($src) : 0;
+
+            $this->recorder->record('MOVE', [
+                'src'  => $src,
+                'dst'  => $dst,
+                'size' => $size
+            ]);
+
+            return null;
+
+        case 'mkdir':
+            $path = $args[0] ?? null;
+            $this->recorder->record('MKDIR', compact('path'));
+            return null;
+
+        case 'remove':
+            $path = $args[0] ?? null;
+            $this->recorder->record('DELETE', compact('path'));
+            return null;
+
+        case 'open':
+            $path = $args[0] ?? null;
+            $this->recorder->record('OPEN', compact('path'));
+            return null;
+
+        case 'listdir':
+            $path = $args[0] ?? null;
+
+            $this->recorder->record('SCAN_DIR', compact('path'));
+
+            $list = [];
+
+            if (is_string($path) && is_dir($path)) {
+                foreach (scandir($path) as $f) {
+                    if ($f === '.' || $f === '..') continue;
+                    $full = $path . '/' . $f;
+                    if (is_file($full)) {
+                        $list[] = $full;
+                    }
+                }
+            }
+
+            $h = $this->nextHandle++;
+            $this->walkIters[$h] = ['list'=>$list,'idx'=>0];
+            return $h;
+                        
+        case 'dir_next':
+            $h = $args[0] ?? 0;
+
+            if (!isset($this->walkIters[$h])) return null;
+
+            $it = &$this->walkIters[$h];
+
+            if ($it['idx'] >= count($it['list'])) return null;
+
+            return $it['list'][$it['idx']++];
+
+        case 'rmdir':
+            $path = $args[0] ?? null;
+
+            $files = 0;
+            $bytes = 0;
+
+            if (is_dir($path)) {
+                $it = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)
+                );
+
+                foreach ($it as $f) {
+                    if ($f->isFile()) {
+                        $files++;
+                        $bytes += $f->getSize();
+                    }
+                }
+            }
+
+            $this->recorder->record('DELETE_DIR', [
+                'path'  => $path,
+                'files' => $files,
+                'bytes' => $bytes
+            ]);
+
+            return null;
+
+
+        case 'write':
+            $data = $args[1] ?? null;
+
+            $bytes = 0;
+
+            if (is_string($data)) {
+                $bytes = strlen($data);
+            } elseif (is_int($data)) {
+                $bytes = strlen((string)$data);
+            }
+
+            $this->recorder->record('WRITE', [
+                'bytes' => $bytes
+            ]);
+
+            return null;  
+
+        case 'close':
+            $this->recorder->record('CLOSE', []);
+            return null;
+
+        case 'walk':
+            $path = $args[0] ?? null;
+
+            $this->recorder->record('SCAN_DIR', compact('path'));
+
+            $list = [];
+
+            if (is_string($path) && is_dir($path)) {
+                $it = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)
+                );
+
+                foreach ($it as $f) {
+                    if ($f->isFile()) {
+                        $list[] = $f->getPathname();
+                    }
+                }
+            }
+
+            $h = $this->nextHandle++;
+            $this->walkIters[$h] = ['list'=>$list,'idx'=>0];
+
+            return $h;
+
+
+
+        case 'walk_next':
+            return null;
+
+
+
+        case 'walk_close':
+        case 'dir_close':
+            $h = $args[0] ?? 0;
+            unset($this->walkIters[$h]);
+            return null;
+            
+        case 'stat':
+            $path = $args[0] ?? null;
+            return is_string($path) ? (@stat($path) ?: null) : null;
+
+        default:
+            return $this->executeBuiltin($name, $args);
+    }
+}
+
+private function simulateBuiltin(string $name, array $args)
+{
+    if (!$this->recorder) return null;
+
+    // helper local
+    $filesOf = function(string $path): array {
+        $out = [];
+
+        if (!is_dir($path)) return $out;
+
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)
+        );
+
+        foreach ($it as $f) {
+            if ($f->isFile()) {
+                $out[] = [
+                    'path' => $f->getPathname(),
+                    'size' => $f->getSize()
+                ];
+            }
+        }
+
+        return $out;
+    };
+
+    switch ($name) {
+
+    // =====================================================
+    // COPY
+    // =====================================================
+    case 'copy':
+        $src = $args[0] ?? null;
+        $dst = $args[1] ?? null;
+
+        if (is_file($src)) {
+            $size = filesize($src);
+
+            $this->recorder->record('COPY', [
+                'src'=>$src,
+                'dst'=>$dst,
+                'size'=>$size
+            ]);
+        }
+
+        return null;
+
+
+    // =====================================================
+    // MOVE
+    // =====================================================
+    case 'move':
+        $src = $args[0] ?? null;
+        $dst = $args[1] ?? null;
+
+        if (is_file($src)) {
+            $size = filesize($src);
+
+            $this->recorder->record('MOVE', [
+                'src'=>$src,
+                'dst'=>$dst,
+                'size'=>$size
+            ]);
+        }
+
+        return null;
+
+
+    // =====================================================
+    // DELETE FILE
+    // =====================================================
+    case 'remove':
+    case 'delete':
+        $path = $args[0] ?? null;
+
+        if (is_file($path)) {
+            $size = filesize($path);
+
+            $this->recorder->record('DELETE', [
+                'path'=>$path,
+                'size'=>$size
+            ]);
+        }
+
+        return null;
+
+
+    // =====================================================
+    // DELETE DIR (recursivo REAL)
+    // =====================================================
+    case 'rmdir':
+    case 'delete_dir':
+        $path = $args[0] ?? null;
+
+        $files = $filesOf($path);
+
+        $count = 0;
+        $bytes = 0;
+
+        foreach ($files as $f) {
+            $count++;
+            $bytes += $f['size'];
+        }
+
+        $this->recorder->record('DELETE_DIR', [
+            'path'=>$path,
+            'files'=>$count,
+            'bytes'=>$bytes
+        ]);
+
+        return null;
+
+
+    // =====================================================
+    // MKDIR
+    // =====================================================
+    case 'mkdir':
+        $path = $args[0] ?? null;
+
+        $this->recorder->record('MKDIR', [
+            'path'=>$path
+        ]);
+
+        return null;
+
+
+    // =====================================================
+    // WRITE
+    // =====================================================
+    case 'write':
+        $data = $args[1] ?? '';
+
+        $bytes = strlen((string)$data);
+
+        $this->recorder->record('WRITE', [
+            'bytes'=>$bytes
+        ]);
+
+        return null;
+
+
+    // =====================================================
+    // OPEN / CLOSE
+    // =====================================================
+    case 'open':
+        $path = $args[0] ?? null;
+
+        $this->recorder->record('OPEN', compact('path'));
+        return null;
+
+    case 'close':
+        $this->recorder->record('CLOSE', []);
+        return null;
+
+
+    // =====================================================
+    // LISTDIR (REAL)
+    // =====================================================
+    case 'listdir':
+        $path = $args[0] ?? null;
+
+        $this->recorder->record('SCAN_DIR', compact('path'));
+
+        $list = [];
+
+        if (is_string($path) && is_dir($path)) {
+            foreach (scandir($path) as $f) {
+                if ($f === '.' || $f === '..') continue;
+                $list[] = $path . '/' . $f;
+            }
+        }
+
+        $h = $this->nextHandle++;
+        $this->walkIters[$h] = ['list'=>$list,'idx'=>0];
+
+        return $h;
+
+
+    case 'dir_next':
+        $h = $args[0] ?? 0;
+
+        if (!isset($this->walkIters[$h])) return null;
+
+        $it = &$this->walkIters[$h];
+
+        if ($it['idx'] >= count($it['list'])) return null;
+
+        return $it['list'][$it['idx']++];
+
+
+    // =====================================================
+    // WALK (recursivo REAL)
+    // =====================================================
+    case 'walk':
+        $path = $args[0] ?? null;
+
+        $this->recorder->record('SCAN_DIR', compact('path'));
+
+        $files = [];
+
+        if (is_string($path) && is_dir($path)) {
+            foreach ($filesOf($path) as $f) {
+                $files[] = $f['path'];
+            }
+        }
+
+        $h = $this->nextHandle++;
+        $this->walkIters[$h] = ['list'=>$files,'idx'=>0];
+
+        return $h;
+
+
+    case 'walk_next':
+        $h = $args[0] ?? 0;
+
+        if (!isset($this->walkIters[$h])) return null;
+
+        $it = &$this->walkIters[$h];
+
+        if ($it['idx'] >= count($it['list'])) return null;
+
+        return $it['list'][$it['idx']++];
+
+
+    case 'walk_close':
+    case 'dir_close':
+        $h = $args[0] ?? 0;
+        unset($this->walkIters[$h]);
+        return null;
+
+
+    // =====================================================
+    // STAT
+    // =====================================================
+    case 'stat':
+        return null; // o eliminar builtin
+
+
+    default:
+        return $this->executeBuiltin($name, $args);
+    }
+}
+
+
+    private function executeBuiltin(string $name, array $args)
+    {
+        switch ($name) {
+
+            case 'arg':
+                global $argv;
+
+                // arg() o arg(null) => ""
+                $flag = $args[0] ?? null;
+                if (!is_string($flag) || $flag === '') {
+                    return "";
+                }
+
+                $n = count($argv);
+
+                // busca el flag
+                for ($i = 0; $i < $n; $i++) {
+                    if ($argv[$i] === $flag) {
+                        // si no hay valor, devolvemos ""
+                        if ($i + 1 >= $n) return "";
+                        // si el "valor" es otro flag, devolvemos ""
+                        if (is_string($argv[$i + 1]) && str_starts_with($argv[$i + 1], '--')) return "";
+                        return $argv[$i + 1];
+                    }
+                }
+
+                return "";
+
+            case 'join':
+                return implode('/', array_filter($args));
+
+            case 'concat':
+                return implode('', $args);
+
+            case 'length':
+                return strlen((string)$args[0]);
+
+            default:
+                // fallback debug
+                $printable = array_map(function ($a) {
+                    if (is_scalar($a) || $a === null) return $a;
+                    return json_encode($a);
+                }, $args);
+
+                echo "[builtin] $name(" . implode(', ', $printable) . ")\n";
+                return null;
+        }
+    }
+
+
+
 }

@@ -351,13 +351,17 @@ class Analyzer
             "copy"     => "bool",
             "move"     => "bool",
             "remove"   => "void",
-            "removeTree" => "bool",
+            "removeTree" => "void",
+            "removeByExt" => "void",
+            "removeOlderThan"   => "void",
+            "removeBiggerThan"  => "void",
 
             // Stat
             "stat"     => "statinfo",
             "isfile"   => "bool",
             "isdir"    => "bool",
             "mtime"    => "int",            
+            "now"      => "int",
 
             // Dir iteration
             "listdir"    => "diriter",
@@ -380,6 +384,19 @@ class Analyzer
             "overviewExtFiles"    => "int",
             "overviewExtSize"     => "int",
             "overviewSummary"     => "str",
+
+            // Analyze
+            "analyze"           => "analyzeinfo",
+            "analyzeFiles"      => "int",
+            "analyzeDirs"       => "int",
+            "analyzeSize"       => "int",
+            "analyzeExtCount"   => "int",
+            "analyzeExtName"    => "str",
+            "analyzeExtFiles"   => "int",
+            "analyzeExtSize"    => "int",
+            "analyzeTopCount"   => "int",
+            "analyzeTopPath"    => "str",
+            "analyzeTopSize"    => "int",
 
             // Strings
             "concat"     => "str",

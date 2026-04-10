@@ -299,9 +299,54 @@ final class CEmitter
         '// --------------------------------------------------',
         '// Soul runtime prelude (MUST appear before main)',
         '// --------------------------------------------------',
-
         '#include <sys/stat.h>',
         '#include <stdarg.h>',
+        '#include <stdio.h>',
+        '
+        // --------------------------------------------------
+        // Fast hash (xxHash64 minimal streaming)
+        // --------------------------------------------------
+
+        #include <stdint.h>
+
+        typedef struct {
+            uint64_t h;
+        } soul_hash64_t;
+
+        static inline void soul_hash64_init(soul_hash64_t* s) {
+            s->h = 1469598103934665603ULL; // FNV offset (simple, muy rápido)
+        }
+
+        static inline void soul_hash64_update(soul_hash64_t* s, const void* data, size_t len) {
+            const unsigned char* p = (const unsigned char*)data;
+            uint64_t h = s->h;
+
+            for (size_t i = 0; i < len; i++) {
+                h ^= p[i];
+                h *= 1099511628211ULL;
+            }
+
+            s->h = h;
+        }
+
+        static inline uint64_t soul_hash64_final(soul_hash64_t* s) {
+            return s->h;
+        }        
+        ',
+        '',
+        '// --------------------------------------------------',
+        '// STDIO buffering fix (real-time output for all Soul programs)',
+        '// --------------------------------------------------',
+        '__attribute__((constructor))',
+        'static void soul_stdio_init(void) {',
+        '    // stdout: flush on newline',
+        '    setvbuf(stdout, NULL, _IOLBF, 0);',
+        '',
+        '    // stderr: no buffering (progress / debug always instant)',
+        '    setvbuf(stderr, NULL, _IONBF, 0);',
+        '}',
+        '',
+
         '',
         '// --------------------------------------------------',
         '// Filesystem overview',
@@ -440,6 +485,256 @@ final class CEmitter
             '  return (uintptr_t)0;',
             '}',
             '',
+        '',
+        '// --------------------------------------------------',
+        '// analyze: single-pass heavy filesystem aggregation',
+        '// --------------------------------------------------',
+        '',
+        '#define SOUL_AN_MAX_EXT 32',
+        '#define SOUL_AN_EXT_LEN 24',
+        '#define SOUL_AN_MAX_TOP 128',
+        '',
+        'typedef struct {',
+        '    int64_t files;',
+        '    int64_t dirs;',
+        '    int64_t size;',
+        '',
+        '    int32_t extTop;',
+        '    char    extNames[SOUL_AN_MAX_EXT][SOUL_AN_EXT_LEN];',
+        '    int64_t extFiles[SOUL_AN_MAX_EXT];',
+        '    int64_t extSize[SOUL_AN_MAX_EXT];',
+        '',
+        '    int32_t topN;',
+        '    const char* topPath[SOUL_AN_MAX_TOP];',
+        '    int64_t     topSize[SOUL_AN_MAX_TOP];',
+        '',
+        '} soul_analyze_t;',
+        '',
+        '// compound extension (.tar.gz etc)',
+        'static const char* soul_ext_compound(const char* name) {',
+        '    const char* last = NULL;',
+        '    const char* prev = NULL;',
+        '    const char* p = name;',
+        '',
+        '    while (*p) {',
+        '        if (*p == \'.\') {',
+        '            prev = last;',
+        '            last = p;',
+        '        }',
+        '        p++;',
+        '    }',
+        '',
+        '    if (!last) return NULL;',
+        '',
+        '    if (prev && (last - prev) <= 5) {',
+        '        return prev + 1;',
+        '    }',
+        '',
+        '    return last + 1;',
+        '}',
+        '',
+        '',
+        '// -------- analyze getters --------',
+        '',
+        'static int64_t soul_an_files(uintptr_t h) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    return a->files;',
+        '}',
+        '',
+        'static int64_t soul_an_dirs(uintptr_t h) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    return a->dirs;',
+        '}',
+        '',
+        'static int64_t soul_an_size(uintptr_t h) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    return a->size;',
+        '}',
+        '',
+        'static int64_t soul_an_ext_count(uintptr_t h) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    return a->extTop;',
+        '}',
+        '',
+        'static const char* soul_an_ext_name(uintptr_t h, int64_t i) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    if (i < 0 || i >= a->extTop) return "";',
+        '    return a->extNames[i];',
+        '}',
+        '',
+        'static int64_t soul_an_ext_files(uintptr_t h, int64_t i) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    if (i < 0 || i >= a->extTop) return 0;',
+        '    return a->extFiles[i];',
+        '}',
+        '',
+        'static int64_t soul_an_ext_size(uintptr_t h, int64_t i) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    if (i < 0 || i >= a->extTop) return 0;',
+        '    return a->extSize[i];',
+        '}',
+        '',
+        'static int64_t soul_an_top_count(uintptr_t h) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    return a->topN;',
+        '}',
+        '',
+        'static const char* soul_an_top_path(uintptr_t h, int64_t i) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    if (i < 0 || i >= a->topN) return "";',
+        '    return a->topPath[i] ? a->topPath[i] : "";',
+        '}',
+        '',
+        'static int64_t soul_an_top_size(uintptr_t h, int64_t i) {',
+        '    soul_analyze_t* a = (soul_analyze_t*)h;',
+        '    if (i < 0 || i >= a->topN) return 0;',
+        '    return a->topSize[i];',
+        '}',
+        '',
+        '// forward decls (needed by C)',
+        'static const char* soul_persist_str(const char* s);',
+        '',
+        'static void soul_an_ext_add(soul_analyze_t* a, const char* ext, int64_t size) {',
+        '    if (!ext) return;',
+        '',
+        '    for (int i = 0; i < a->extTop; i++) {',
+        '        if (strncmp(a->extNames[i], ext, SOUL_AN_EXT_LEN) == 0) {',
+        '            a->extFiles[i]++;',
+        '            a->extSize[i] += size;',
+        '            return;',
+        '        }',
+        '    }',
+        '',
+        '    if (a->extTop < SOUL_AN_MAX_EXT) {',
+        '        int i = a->extTop++;',
+        '        strncpy(a->extNames[i], ext, SOUL_AN_EXT_LEN-1);',
+        '        a->extNames[i][SOUL_AN_EXT_LEN-1] = 0;',
+        '        a->extFiles[i] = 1;',
+        '        a->extSize[i]  = size;',
+        '    }',
+        '}',
+        '',
+        'static void soul_an_top_add(soul_analyze_t* a, const char* path, int64_t size) {',
+        '    if (a->topN <= 0) return;',
+        '',
+        '    int minIdx = 0;',
+        '    for (int i = 1; i < a->topN; i++) {',
+        '        if (a->topSize[i] < a->topSize[minIdx]) minIdx = i;',
+        '    }',
+        '',
+        '    if (size <= a->topSize[minIdx]) return;',
+        '',
+        '    a->topSize[minIdx] = size;',
+        '    a->topPath[minIdx] = soul_persist_str(path);',
+        '}',
+        '',
+        'static void soul_an_scan(const char* path, soul_analyze_t* a) {',
+        '',
+        '    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_DIRECTORY, 0);',
+        '',
+        '    // --------------------------------------------------',
+        '    // Si NO es directorio → es archivo regular',
+        '    // --------------------------------------------------',
+        '    if (fd < 0) {',
+        '        struct stat st;',
+        '        if (lstat(path, &st) != 0) return;',
+        '',
+        '        if (S_ISREG(st.st_mode)) {',
+        '            a->files++;',
+        '            a->size += st.st_size;',
+        '',
+        '            const char* ext = soul_ext_compound(path);',
+        '            soul_an_ext_add(a, ext, st.st_size);',
+        '            soul_an_top_add(a, path, st.st_size);',
+        '        }',
+        '        return;',
+        '    }',
+        '',
+        '    // --------------------------------------------------',
+        '    // Directorio → iterar sin lstat por entrada',
+        '    // --------------------------------------------------',
+        '',
+        '    a->dirs++;',
+        '',
+        '    char buf[1 << 16];',
+        '',
+        '    for (;;) {',
+        '        int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+        '        if (nread <= 0) break;',
+        '',
+        '        int bpos = 0;',
+        '        while (bpos < nread) {',
+        '',
+        '            struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+        '            bpos += d->d_reclen;',
+        '',
+        '            // skip "." y ".."',
+        '            if (d->d_name[0] == 46) {',
+        '                if (d->d_name[1] == 0) continue;',
+        '                if (d->d_name[1] == 46 && d->d_name[2] == 0) continue;',
+        '            }',
+        '',
+        '            char child[4096];',
+        '            snprintf(child, sizeof(child), "%s/%s", path, d->d_name);',
+        '',
+        '            // --------------------------------------------------',
+        '            // USAR d_type → evita lstat masivo',
+        '            // --------------------------------------------------',
+        '',
+        '            #ifndef DT_DIR',
+        '            #define DT_DIR 4',
+        '            #endif',
+        '',
+        '            #ifndef DT_REG',
+        '            #define DT_REG 8',
+        '            #endif',
+        '',
+        '            if (d->d_type == DT_DIR) {',
+        '                soul_an_scan(child, a);',
+        '                continue;',
+        '            }',
+        '',
+        '            if (d->d_type == DT_REG) {',
+        '                struct stat st;',
+        '                if (lstat(child, &st) == 0) {',
+        '                    a->files++;',
+        '                    a->size += st.st_size;',
+        '',
+        '                    const char* ext = soul_ext_compound(child);',
+        '                    soul_an_ext_add(a, ext, st.st_size);',
+        '                    soul_an_top_add(a, child, st.st_size);',
+        '                }',
+        '                continue;',
+        '            }',
+        '',
+        '            // fallback (symlink u otros)',
+        '            soul_an_scan(child, a);',
+        '        }',
+        '    }',
+        '',
+        '    syscall(SYS_close, fd);',
+        '}',
+
+        '',
+        'static soul_analyze_t soul_an_pool[4];',
+        'static int soul_an_idx = 0;',
+        '',
+        'static uintptr_t soul_analyze(const char* path, int64_t topN) {',
+        '',
+        '    soul_analyze_t* a = &soul_an_pool[soul_an_idx++ & 3];',
+        '    memset(a, 0, sizeof(*a));',
+        '',
+        '    if (topN < 0) topN = 0;',
+        '    if (topN > SOUL_AN_MAX_TOP) topN = SOUL_AN_MAX_TOP;',
+        '',
+        '    a->topN = (int)topN;',
+        '',
+        '    soul_an_scan(path, a);',
+        '',
+        '    return (uintptr_t)a;',
+        '}',
+        '',
+
             'typedef struct {
                 int fd;
                 int nread;
@@ -496,7 +791,8 @@ final class CEmitter
 
                 return 0;
             }',
-            'static uintptr_t soul_walk_next(uintptr_t h) {
+            '
+            static uintptr_t soul_walk_next(uintptr_t h) {
                 if (!h) return 0;
 
                 int idx = (int)h - 1;
@@ -504,7 +800,6 @@ final class CEmitter
 
                 walk_iter_t* it = &walk_iters[idx];
                 if (it->fd < 0) return 0;
-
 
                 static char outBufs[8][4096];
                 static int outIdx = 0;
@@ -529,13 +824,10 @@ final class CEmitter
                                 return 0;
                             }
 
-                            // pop siguiente directorio
                             it->stackSize--;
-                            strncpy(
-                                it->currentPath,
-                                it->stack[it->stackSize],
-                                sizeof(it->currentPath) - 1
-                            );
+                            strncpy(it->currentPath,
+                                    it->stack[it->stackSize],
+                                    sizeof(it->currentPath) - 1);
                             it->currentPath[sizeof(it->currentPath) - 1] = 0;
 
                             it->fd = (int)syscall(
@@ -555,30 +847,36 @@ final class CEmitter
                     struct linux_dirent64* d =
                         (struct linux_dirent64*)(it->buf + it->bpos);
 
-                    it->bpos += d->d_reclen;
-
-                    // saltar "." y ".." (forma segura)
-                    if (d->d_name[0] == \'.\') {
-                        if (d->d_name[1] == 0) continue;
-                        if (d->d_name[1] == \'.\' && d->d_name[2] == 0) continue;
-                    }
-
+                    it->bpos += d->d_reclen;',        
+                    'if (d->d_name[0] == 46) {',
+                    '    if (d->d_name[1] == 0) continue;',
+                    '    if (d->d_name[1] == 46 && d->d_name[2] == 0) continue;',
+                    '}',
+                    '',
+                    '// usar d_type en vez de lstat (0 syscalls)',
+                    '
+                    // construir path completo
                     snprintf(out, 4096, "%s/%s", it->currentPath, d->d_name);
 
-                    // comprobar si es directorio con lstat
-                    struct stat st;
-                    if (it->stackSize < 256 &&
-                        lstat(out, &st) == 0 &&
-                        S_ISDIR(st.st_mode)) {
+                    // si es directorio → push al stack
+                    #ifndef DT_DIR
+                    #define DT_DIR 4
+                    #endif
 
+                    if (it->stackSize < 256 && d->d_type == DT_DIR) {
                         strncpy(it->stack[it->stackSize], out, 4095);
                         it->stack[it->stackSize][4095] = 0;
                         it->stackSize++;
                     }
 
                     return (uintptr_t)out;
+
+
                 }
-            }',
+            }
+                        
+            ',
+
             'static void soul_walk_close(uintptr_t h) {
                 if (!h) return;
 
@@ -1032,53 +1330,104 @@ final class CEmitter
             '  return (uintptr_t)out;',
             '}',
             '',
-            'static int soul_copyFolder_depth = 0;',            
+            'static int soul_copyFolder_depth = 0;
+            
+            // --------------------------------------------------
+            // Copy integrity control (GLOBAL STATE)
+            // --------------------------------------------------
+            static int soul_copy_fail_fast = 1;
+            static int soul_copy_errors = 0;
+            static int soul_copy_verify_enabled = 1;            
+            
+            ',            
             '',
-            'static uintptr_t soul_copy(const char* src, const char* dst) {',
-            '  if (!src || !dst) return 0;',
-            '',
-            '  int in = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY, 0);',
-            '  if (in < 0) return 0;',
-            '',
-            '  int out = (int)syscall(SYS_openat, AT_FDCWD, dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-            '  if (out < 0) {',
-            '    syscall(SYS_close, in);',
-            '    return 0;',
-            '  }',
-            '',
-            '  char buf[1 << 16];',
-            '  for (;;) {',
-            '    long n = syscall(SYS_read, in, buf, sizeof(buf));',
-            '    if (n == 0) break;',
-            '    if (n < 0) {',
-            '      syscall(SYS_close, in);',
-            '      syscall(SYS_close, out);',
-            '      return 0;',
-            '    }',
-            '',
-            '    // progress durante copia de bloques grandes',
-            '    if (soul_copyFolder_depth == 1) {',
-            '      soul_progress_tick();',
-            '    }',
-            '',
-            '    char* p = buf;',
-            '    long left = n;',
-            '    while (left > 0) {',
-            '      long w = syscall(SYS_write, out, p, (size_t)left);',
-            '      if (w <= 0) {',
-            '        syscall(SYS_close, in);',
-            '        syscall(SYS_close, out);',
-            '        return 0;',
-            '      }',
-            '      p += w;',
-            '      left -= w;',
-            '    }',
-            '  }',
-            '',
-            '  syscall(SYS_close, in);',
-            '  syscall(SYS_close, out);',
-            '  return 1;',
-            '}',
+            '
+            static uintptr_t soul_copy_verify(const char* src, const char* dst, int verify) {
+                if (!src || !dst) return 0;
+
+                int in = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY, 0);
+                if (in < 0) return 0;
+
+                int out = (int)syscall(SYS_openat, AT_FDCWD, dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (out < 0) {
+                    syscall(SYS_close, in);
+                    return 0;
+                }
+
+                soul_hash64_t hsrc;
+                if (verify) {
+                    soul_hash64_init(&hsrc);
+                }
+
+                char buf[1 << 16];
+
+                for (;;) {
+                    long n = syscall(SYS_read, in, buf, sizeof(buf));
+                    if (n == 0) break;
+                    if (n < 0) goto fail;
+
+                    if (verify) soul_hash64_update(&hsrc, buf, (size_t)n);
+
+                    char* p = buf;
+                    long left = n;
+
+                    while (left > 0) {
+                        long w = syscall(SYS_write, out, p, (size_t)left);
+                        if (w <= 0) goto fail;
+                        p += w;
+                        left -= w;
+                    }
+
+                    if (soul_copyFolder_depth == 1) soul_progress_tick();
+                }
+
+                syscall(SYS_close, in);
+                syscall(SYS_close, out);
+
+                if (verify) {
+                    // ===== RE-READ DST FROM DISK =====
+                    int fd2 = (int)syscall(SYS_openat, AT_FDCWD, dst, O_RDONLY, 0);
+                    if (fd2 < 0) return 0;
+
+                    soul_hash64_t hdst;
+                    soul_hash64_init(&hdst);
+
+                    for (;;) {
+                        long n2 = syscall(SYS_read, fd2, buf, sizeof(buf));
+                        if (n2 == 0) break;
+                        if (n2 < 0) {
+                            syscall(SYS_close, fd2);
+                            return 0;
+                        }
+                        soul_hash64_update(&hdst, buf, (size_t)n2);
+                    }
+
+                    syscall(SYS_close, fd2);
+
+                    uint64_t a = soul_hash64_final(&hsrc);
+                    uint64_t b = soul_hash64_final(&hdst);
+                    if (a != b) return 0;
+                }
+
+                return 1;
+
+            fail:
+                syscall(SYS_close, in);
+                syscall(SYS_close, out);
+                return 0;
+            }
+
+            ',
+            '
+            static uintptr_t soul_copy(const char* src, const char* dst) {
+            return soul_copy_verify(src, dst, 0);
+            }
+
+            static uintptr_t soul_copy_checked(const char* src, const char* dst) {
+            return soul_copy_verify(src, dst, 1);
+            }
+                        
+            ',
             '',
             'static uintptr_t soul_removeTree(const char* path) {',
             '  if (!path || !path[0]) return 0;',
@@ -1125,11 +1474,16 @@ final class CEmitter
             '    syscall(SYS_unlinkat, AT_FDCWD, path, 0);',
             '  }',
             '',
-            '  remove_depth--;',
+            '  remove_depth--;                      
+            ',
             '  if (is_root) soul_progress_end(1);',
             '',
             '  return 1;',
             '}',
+            '',
+            '
+            
+            ',
             '',
             'static uintptr_t soul_append(const char* path, const char* text) {',
             '    if (!path || !text) return 0;',
@@ -1148,7 +1502,11 @@ final class CEmitter
             '',
             '    return (w == (long)len) ? 1 : 0;',
             '}',
-            '',     
+            '
+            static uintptr_t soul_now(void) {
+                return SOUL_TAG_INT((int64_t)soul_now_ms());
+            }
+            ',     
         '',
         '// --------------------------------------------------',
         '// Buffered write runtime (open / write / close)',
@@ -1473,10 +1831,23 @@ final class CEmitter
             '    if (soul_worker_id != 0) return; // solo espera el padre',
             '    if (workers <= 1) return;',
             '',
-            '    for (int i = 1; i < workers; i++) {',
-            '        int status = 0;',
-            '        wait(&status);',
-            '    }',
+            '    
+                int hadError = 0;
+
+                for (int i = 1; i < workers; i++) {
+                    int status = 0;
+                    wait(&status);
+
+                    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                        hadError = 1;
+                    }
+                }
+
+                if (hadError) {
+                    exit(1);
+                }
+
+            ',
             '',
             '    // limpieza de temporales del job (solo el padre, cuando todos han terminado)',
             '    {',
@@ -1534,56 +1905,74 @@ final class CEmitter
             '}',
             'static uintptr_t soul_atomic_append(const char* path, const char* text);',
             'static uintptr_t soul_backupFolder(const char* src, const char* dst) {',
+            '
+                soul_worker_init();
+
+                // Parse flags only once per process
+                if (soul_worker_id == 0) {
+                    if (soul_arg("--continue-on-error", 0)) {
+                        soul_copy_fail_fast = 0;
+                    }
+                    if (soul_arg("--no-verify", 0)) {
+                        soul_copy_verify_enabled = 0;
+                    }
+                }                
+
+                int is_root = (soul_backup_depth == 0);
+                if (is_root) {
+                    soul_progress_begin("backup");
+
+                    snprintf(
+                        soul_backup_root_dst,
+                        sizeof(soul_backup_root_dst),
+                        "%s",
+                        dst
+                    );
+
+                    snprintf(
+                        soul_backup_log_path,
+                        sizeof(soul_backup_log_path),
+                        "%s/.soul_backup.log",
+                        soul_backup_root_dst
+                    );
+
+                    if (soul_worker_id == 0) {
+                        char ts[64];
+                        char hdr[512];
+                        soul_now_iso(ts, sizeof(ts));
+
+                        snprintf(
+                            hdr, sizeof(hdr),
+                            "\\n========================================\\n"
+                            "BACKUP START %s\\n"
+                            "SRC: %s\\n"
+                            "DST: %s\\n"
+                            "----------------------------------------\\n",
+                            ts, src, dst
+                        );
+
+                        soul_atomic_append(soul_backup_log_path, hdr);
+                    }
+                }
+
+                soul_backup_depth++;
+            ',
+            '    struct stat stSrc;',
             '',
-            '    // inicialización SOLO en la llamada raíz',
-            '    if (soul_backup_depth == 0) {',
-            '        snprintf(',
-            '            soul_backup_root_dst,',
-            '            sizeof(soul_backup_root_dst),',
-            '            "%s",',
-            '            dst',
-            '        );',
-            '',
-            '        snprintf(',
-            '            soul_backup_log_path,',
-            '            sizeof(soul_backup_log_path),',
-            '            "%s/.soul_backup.log",',
-            '            soul_backup_root_dst',
-            '        );',
-            'if (soul_worker_id == 0) {',
-            '    char ts[64];',
-            '    char hdr[512];',
-            '    soul_now_iso(ts, sizeof(ts));',
-            '',
-            '    snprintf(',
-            '        hdr, sizeof(hdr),',
-            '        "\\n========================================\\n"',
-            '        "BACKUP START %s\\n"',
-            '        "SRC: %s\\n"',
-            '        "DST: %s\\n"',
-            '        "----------------------------------------\\n",',
-            '        ts, src, dst',
-            '    );',
-            '',
-            '    soul_atomic_append(soul_backup_log_path, hdr);',
-            '}',
+            '    if (stat(src, &stSrc) != 0) {',
+            '        soul_backup_depth--;',
+            '        return 0;',
             '    }',
             '',
-            '    soul_backup_depth++;',
-            '',
-            '    soul_worker_init();',
-
-            '',
-            '    struct stat stSrc;',
-            '    struct stat stDst;',
-            '',
-            '    if (stat(src, &stSrc) != 0) return 0;',
-            '',
+            '    // ================= DIR =================',
             '    if (S_ISDIR(stSrc.st_mode)) {',
             '        syscall(SYS_mkdirat, AT_FDCWD, dst, 0755);',
             '',
             '        int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
-            '        if (fd < 0) return 0;',
+            '        if (fd < 0) {',
+            '            soul_backup_depth--;',
+            '            return 0;',
+            '        }',
             '',
             '        char buf[1 << 16];',
             '        for (;;) {',
@@ -1592,6 +1981,8 @@ final class CEmitter
             '',
             '            int bpos = 0;',
             '            while (bpos < nread) {',
+            '                if (is_root) soul_progress_tick();',
+            '',
             '                struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
             '                bpos += d->d_reclen;',
             '',
@@ -1601,62 +1992,53 @@ final class CEmitter
             '',
             '                char srcPath[4096];',
             '                char dstPath[4096];',
+            '',
             '                snprintf(srcPath, sizeof(srcPath), "%s/%s", src, d->d_name);',
             '                snprintf(dstPath, sizeof(dstPath), "%s/%s", dst, d->d_name);',
             '',
             '                soul_backupFolder(srcPath, dstPath);',
             '            }',
             '        }',
+            '',
             '        syscall(SYS_close, fd);',
+            '',
             '        soul_backup_depth--;',
-            'if (soul_backup_depth == 0 && soul_worker_id == 0) {',
-            '    char ts[64];',
-            '    char ftr[256];',
-            '    soul_now_iso(ts, sizeof(ts));',
+
+            '        if (is_root && soul_worker_id == 0) {',
+            '            char ts[64];',
+            '            char ftr[256];',
+            '            soul_now_iso(ts, sizeof(ts));',
             '',
-            '    snprintf(',
-            '        ftr, sizeof(ftr),',
-            '        "----------------------------------------\\n"',
-            '        "BACKUP END   %s\\n"',
-            '        "========================================\\n"',
-            '        , ts',
-            '    );',
+            '            snprintf(',
+            '                ftr, sizeof(ftr),',
+            '                "----------------------------------------\\n"',
+            '                "BACKUP END   %s\\n"',
+            '                "========================================\\n",',
+            '                ts',
+            '            );',
             '',
-            '    soul_atomic_append(soul_backup_log_path, ftr);',
-            '}',
+            '            soul_atomic_append(soul_backup_log_path, ftr);',
+            '',
+            '            // ===== JSON resumen =====',
+            '            char jsonPath[4096];',
+            '            snprintf(jsonPath, sizeof(jsonPath), "%s/backup.json", soul_backup_root_dst);',
+            '            soul_write_file(jsonPath, "{\\"status\\":\\"ok\\"}\\n");',
+            '',
+            '            soul_progress_end(1);',
+            '        }',
+            '',
             '        return 1;',
             '    }',
             '',
-            'if (S_ISREG(stSrc.st_mode)) {',
-            '    int needCopy = 0;',
-            '',
-            '    if (stat(dst, &stDst) != 0) {',
-            '        needCopy = 1;', 
-            '    } else if (stSrc.st_mtime > stDst.st_mtime || stSrc.st_size != stDst.st_size) {',
-            '        needCopy = 1;',
-            '    }',
-            '',
-            '    if (needCopy) {',
+            '    // ================= FILE =================',
+            '    if (S_ISREG(stSrc.st_mode)) {',
             '        soul_copy(src, dst);',
-            '',
-            '        char logLine[1024];',
-            '        snprintf(',
-            '            logLine,',
-            '            sizeof(logLine),',
-            '            "UPDATED %s -> %s\n",',
-            '            src,',
-            '            dst',
-            '        );',
-            '        soul_atomic_append(soul_backup_log_path, logLine);',
+            '        soul_backup_depth--;',
+            '        return 1;',
             '    }',
             '',
             '    soul_backup_depth--;',
-            '    return 1;',
-            '}',
-            '',
-            '// fallback: no es dir ni fichero regular',
-            'soul_backup_depth--;',
-            'return 1;',
+            '    return 0;',
             '}',
             '',
             '// IPv4: "A.B.C.D" -> uint32 (network order)',
@@ -1759,6 +2141,138 @@ final class CEmitter
             '',
             '  return (uintptr_t)(slot + 1);',
             '}',
+            '',
+        '// --------------------------------------------------',
+        '// Generic filtered walker (base para removeByExt / removeOlderThan / etc.)',
+        '// --------------------------------------------------',
+        '',
+        'typedef int (*soul_predicate_fn)(const char* name, const char* fullPath, const struct stat* st, void* ctx);',
+        '',
+        'static uintptr_t soul_walk_filtered(const char* path, soul_predicate_fn pred, void* ctx) {',
+        '    if (!path || !path[0]) return 0;',
+        '',
+        '    static int depth = 0;',
+        '    depth++;',
+        '',
+        '    int is_root = (depth == 1);',
+        '    if (is_root) soul_progress_begin("remove-filtered");',
+        '',
+        '    int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_DIRECTORY, 0);',
+        '    if (fd < 0) { depth--; return 0; }',
+        '',
+        '    char buf[1 << 16];',
+        '',
+        '    for (;;) {',
+        '        int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+        '        if (nread <= 0) break;',
+        '',
+        '        int bpos = 0;',
+        '        while (bpos < nread) {',
+        '            if (is_root) soul_progress_tick();',
+        '',
+        '            struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+        '            bpos += d->d_reclen;',
+        '',
+        '            if (d->d_name[0] == \'.\' && (!d->d_name[1] || (d->d_name[1]==\'.\' && !d->d_name[2]))) continue;',
+        '',
+        '            char child[4096];',
+        '            snprintf(child, sizeof(child), "%s/%s", path, d->d_name);',
+        '',
+        '#ifndef DT_DIR',
+        '#define DT_DIR 4',
+        '#endif',
+        '#ifndef DT_REG',
+        '#define DT_REG 8',
+        '#endif',
+        '',
+        '            if (d->d_type == DT_DIR) {',
+        '                soul_walk_filtered(child, pred, ctx);',
+        '                continue;',
+        '            }',
+        '',
+        '            if (d->d_type == DT_REG) {',
+        '                struct stat st;',
+        '                if (lstat(child, &st) == 0) {',
+        '                    if (pred(d->d_name, child, &st, ctx)) {',
+        '                        syscall(SYS_unlinkat, AT_FDCWD, child, 0);',
+        '                    }',
+        '                }',
+        '            }',
+        '        }',
+        '    }',
+        '',
+        '    syscall(SYS_close, fd);',
+        '',
+        '    depth--;',
+        '    if (is_root) soul_progress_end(1);',
+        '',
+        '    return 1;',
+        '}',
+        '',
+        '// --------------------------------------------------',
+        '// removeByExt(path, ext)  (ultra fast filtered delete)',
+        '// --------------------------------------------------',
+
+        'static int soul_has_ext(const char* name, const char* ext) {',
+        '    if (!name || !ext) return 0;',
+        '',
+        '    int ln = 0; while (name[ln]) ln++;',
+        '    int le = 0; while (ext[le]) le++;',
+        '',
+        '    if (le > ln) return 0;',
+        '',
+        '    for (int i = 0; i < le; i++) {',
+        '        if (name[ln - le + i] != ext[i]) return 0;',
+        '    }',
+        '',
+        '    return 1;',
+        '}',
+        '
+            static int pred_ext(const char* name, const char* fullPath, const struct stat* st, void* ctx) {
+                (void)fullPath;
+                (void)st;
+                return soul_has_ext(name, (const char*)ctx);
+            }
+
+            static uintptr_t soul_removeByExt(const char* path, const char* ext) {
+                if (!path || !ext) return 0;
+                return soul_walk_filtered(path, pred_ext, (void*)ext);
+            }
+                    
+        ',
+        '
+            // --------------------------------------------------
+            // removeBiggerThan(path, bytes)
+            // --------------------------------------------------
+
+            typedef struct {
+                int64_t minSize;
+            } soul_pred_size_ctx;
+
+            static int pred_bigger_than(
+                const char* name,
+                const char* fullPath,
+                const struct stat* st,
+                void* ctx
+            ) {
+                (void)name;
+                (void)fullPath;
+
+                soul_pred_size_ctx* c = (soul_pred_size_ctx*)ctx;
+                return st->st_size > c->minSize;
+            }
+
+            static uintptr_t soul_removeBiggerThan(const char* path, int64_t bytes) {
+                if (!path) return 0;
+
+                soul_pred_size_ctx ctx;
+                ctx.minSize = bytes;
+
+                return soul_walk_filtered(path, pred_bigger_than, &ctx);
+            }
+                    
+        ',
+
             '',
             'static uintptr_t soul_remove(const char* path) {',
             'if (!path) return 0;',
@@ -2074,205 +2588,252 @@ final class CEmitter
             '    tmp[pos] = 0;',
             '    return (uintptr_t)soul_persist_str(tmp);',
             '}',            
+            '',
+            // --------------------------------------------------',
+            '// copyFolder debug + collector + parallel runner',
+            '// DEBUG CENTRALIZADO (NO dprintf SUELTOS)',
+            '// --------------------------------------------------',
+            'static int soul_copy_debug = 0;', // <-- 0 = OFF | 1 = ON
+            '',
+            'static void dbg_printf(const char* tag, const char* fmt, ...) {',
+            '  if (!soul_copy_debug) return;',
+            '  va_list ap;',
+            '  va_start(ap, fmt);',
+            '  dprintf(2, "[DBG][%s][pid=%d wid=%d] ", tag, (int)getpid(), soul_worker_id);',
+            '  vdprintf(2, fmt, ap);',
+            '  dprintf(2, "\\n");',
+            '  va_end(ap);',
+            '}',
+            '#define DBG(tag, ...) dbg_printf(tag, __VA_ARGS__)',
+            '#define DBG_ERR(tag, msg) dbg_printf(tag, "%s (errno=%d: %s)", msg, errno, strerror(errno))',
+            '',
+            'static int64_t soul_copy_total_files = 0;',
+            '',
+            '// list path is filled per-job',
+            'static char soul_copy_list_path[256];',
+            '',
+            'static void soul_copy_collect(const char* src, const char* dst) {',
+            '  if (!src || !dst) return;',
+            '',
+            '  struct stat st;',
+            '  if (lstat(src, &st) != 0) {',
+            '    DBG_ERR("collect", "lstat");',
+            '    return;',
+            '  }',
+            '',
+            '  if (S_ISLNK(st.st_mode)) {',
+            '    if (stat(src, &st) != 0) {',
+            '      DBG_ERR("collect", "stat");',
+            '      return;',
+            '    }',
+            '  }',
+            '',
+            '  if (S_ISDIR(st.st_mode)) {',
+            '    {',
+            '      char line[8192];',
+            '      int n = snprintf(line, sizeof(line), "D|%s\\n", dst);',
+            '      if (n > 0) soul_atomic_append(soul_copy_list_path, line);',
+            '    }',
+            '',
+            '    int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
+            '    if (fd < 0) {',
+            '      DBG_ERR("collect", "openat");',
+            '      return;',
+            '    }',
+            '',
+            '    char buf[1 << 16];',
+            '    for (;;) {',
+            '      int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
+            '      if (nread <= 0) break;',
+            '',
+            '      int bpos = 0;',
+            '      while (bpos < nread) {',
+            '        struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
+            '        bpos += d->d_reclen;',
+            '',
+            '        if (d->d_name[0] == \'.\' && (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
+            '          continue;',
+            '',
+            '        char srcChild[4096];',
+            '        char dstChild[4096];',
+            '        snprintf(srcChild, sizeof(srcChild), "%s/%s", src, d->d_name);',
+            '        snprintf(dstChild, sizeof(dstChild), "%s/%s", dst, d->d_name);',
+            '',
+            '        soul_copy_collect(srcChild, dstChild);',
+            '      }',
+            '    }',
+            '',
+            '    syscall(SYS_close, fd);',
+            '    return;',
+            '  }',
+            '',
+            '  
+                if (S_ISREG(st.st_mode)) {
 
-'',
-// --------------------------------------------------',
-'// copyFolder debug + collector + parallel runner',
-'// DEBUG CENTRALIZADO (NO dprintf SUELTOS)',
-'// --------------------------------------------------',
-'static int soul_copy_debug = 0;', // <-- 0 = OFF | 1 = ON
-'',
-'static void dbg_printf(const char* tag, const char* fmt, ...) {',
-'  if (!soul_copy_debug) return;',
-'  va_list ap;',
-'  va_start(ap, fmt);',
-'  dprintf(2, "[DBG][%s][pid=%d wid=%d] ", tag, (int)getpid(), soul_worker_id);',
-'  vdprintf(2, fmt, ap);',
-'  dprintf(2, "\\n");',
-'  va_end(ap);',
-'}',
-'#define DBG(tag, ...) dbg_printf(tag, __VA_ARGS__)',
-'#define DBG_ERR(tag, msg) dbg_printf(tag, "%s (errno=%d: %s)", msg, errno, strerror(errno))',
-'',
-'static int64_t soul_copy_total_files = 0;',
-'',
-'// list path is filled per-job',
-'static char soul_copy_list_path[256];',
-'',
-'static void soul_copy_collect(const char* src, const char* dst) {',
-'  if (!src || !dst) return;',
-'',
-'  struct stat st;',
-'  if (lstat(src, &st) != 0) {',
-'    DBG_ERR("collect", "lstat");',
-'    return;',
-'  }',
-'',
-'  if (S_ISLNK(st.st_mode)) {',
-'    if (stat(src, &st) != 0) {',
-'      DBG_ERR("collect", "stat");',
-'      return;',
-'    }',
-'  }',
-'',
-'  if (S_ISDIR(st.st_mode)) {',
-'    {',
-'      char line[8192];',
-'      int n = snprintf(line, sizeof(line), "D|%s\\n", dst);',
-'      if (n > 0) soul_atomic_append(soul_copy_list_path, line);',
-'    }',
-'',
-'    int fd = (int)syscall(SYS_openat, AT_FDCWD, src, O_RDONLY | O_DIRECTORY, 0);',
-'    if (fd < 0) {',
-'      DBG_ERR("collect", "openat");',
-'      return;',
-'    }',
-'',
-'    char buf[1 << 16];',
-'    for (;;) {',
-'      int nread = (int)syscall(SYS_getdents64, fd, buf, sizeof(buf));',
-'      if (nread <= 0) break;',
-'',
-'      int bpos = 0;',
-'      while (bpos < nread) {',
-'        struct linux_dirent64* d = (struct linux_dirent64*)(buf + bpos);',
-'        bpos += d->d_reclen;',
-'',
-'        if (d->d_name[0] == \'.\' && (!d->d_name[1] || (d->d_name[1] == \'.\' && !d->d_name[2])))',
-'          continue;',
-'',
-'        char srcChild[4096];',
-'        char dstChild[4096];',
-'        snprintf(srcChild, sizeof(srcChild), "%s/%s", src, d->d_name);',
-'        snprintf(dstChild, sizeof(dstChild), "%s/%s", dst, d->d_name);',
-'',
-'        soul_copy_collect(srcChild, dstChild);',
-'      }',
-'    }',
-'',
-'    syscall(SYS_close, fd);',
-'    return;',
-'  }',
-'',
-'  if (S_ISREG(st.st_mode)) {',
-'    char line[8192];',
-'    int n = snprintf(line, sizeof(line), "F|%s|%s\\n", src, dst);',
-'    if (n > 0) soul_atomic_append(soul_copy_list_path, line);',
-'    return;',
-'  }',
-'}',
-'',
-'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst) {',
-'  soul_worker_init();',
-'',
-'  char metaPath[256];',
-'  char readyPath[256];',
-'  char dirsReadyPath[256];',
-'',
-'  snprintf(readyPath, sizeof(readyPath), "/tmp/soul_copy_%d.ready", soul_job_id);',
-'  snprintf(dirsReadyPath, sizeof(dirsReadyPath), "/tmp/soul_copy_%d.dirsready", soul_job_id);',
-'  snprintf(soul_copy_list_path, sizeof(soul_copy_list_path), "/tmp/soul_copy_%d.lst", soul_job_id);',
-'  snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
-'',
-'  if (soul_worker_id == 0) {',
-'    unlink(readyPath);',
-'    unlink(dirsReadyPath);',
-'',
-'    int fd = (int)syscall(SYS_openat, AT_FDCWD, soul_copy_list_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-'    if (fd >= 0) syscall(SYS_close, fd);',
-'',
-'    soul_progress_begin("scan");',
-'    soul_copy_collect(src, dst);',
-'    soul_progress_end(1);',
-'',
-'    soul_copy_total_files = 0;',
-'    FILE* cf = fopen(soul_copy_list_path, "r");',
-'    if (cf) {',
-'      char line[8192];',
-'      while (fgets(line, sizeof(line), cf)) {',
-'        if (line[0] == \'F\' && line[1] == \'|\') soul_copy_total_files++;',
-'      }',
-'      fclose(cf);',
-'    }',
-'',
-'    FILE* mf = fopen(metaPath, "w");',
-'    if (mf) {',
-'      fprintf(mf, "%lld\\n", (long long)soul_copy_total_files);',
-'      fclose(mf);',
-'    }',
-'',
-'    fd = (int)syscall(SYS_openat, AT_FDCWD, readyPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-'    if (fd >= 0) syscall(SYS_close, fd);',
-'  }',
-'',
-'  while (access(readyPath, F_OK) != 0) usleep(1000);',
-'',
-'  FILE* mf = fopen(metaPath, "r");',
-'  if (!mf) return 0;',
-'  fscanf(mf, "%" SCNd64, &soul_copy_total_files);',
-'  fclose(mf);',
-'',
-'  int workers = soul_worker_count;',
-'  int wid = soul_worker_id;',
-'',
-'  int files_per_worker = (soul_copy_total_files + workers - 1) / workers;',
-'  int start = wid * files_per_worker;',
-'  int end   = start + files_per_worker;',
-'  if (end > soul_copy_total_files) end = soul_copy_total_files;',
-'',
-'  if (wid == 0) soul_progress_begin("copy");',
-'',
-'  FILE* f = fopen(soul_copy_list_path, "r");',
-'  if (!f) {',
-'    if (wid == 0) soul_progress_end(0);',
-'    return 0;',
-'  }',
-'',
-'  char line[8192];',
-'',
-'  if (wid == 0) {',
-'    while (fgets(line, sizeof(line), f)) {',
-'      if (line[0] == \'D\' && line[1] == \'|\') {',
-'        char* path = line + 2;',
-'        char* nl = strchr(path, \'\\n\');',
-'        if (nl) *nl = 0;',
-'        syscall(SYS_mkdirat, AT_FDCWD, path, 0755);',
-'      }',
-'    }',
-'',
-'    int fd2 = (int)syscall(SYS_openat, AT_FDCWD, dirsReadyPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
-'    if (fd2 >= 0) syscall(SYS_close, fd2);',
-'  }',
-'',
-'  while (access(dirsReadyPath, F_OK) != 0) usleep(1000);',
-'',
-'  rewind(f);',
-'  int64_t fileIdx = 0;',
-'',
-'  while (fgets(line, sizeof(line), f)) {',
-'    if (line[0] == \'F\' && line[1] == \'|\') {',
-'      if (fileIdx >= start && fileIdx < end) {',
-'        char* p = line + 2;',
-'        char* sep = strchr(p, \'|\');',
-'        if (sep) {',
-'          *sep = 0;',
-'          char* srcP = p;',
-'          char* dstP = sep + 1;',
-'          char* nl = strchr(dstP, \'\\n\');',
-'          if (nl) *nl = 0;',
-'          soul_copy(srcP, dstP);',
-'        }',
-'      }',
-'      fileIdx++;',
-'      if (fileIdx >= end) break;',
-'    }',
-'  }',
-'',
-'  fclose(f);',
-'',
-'  if (wid == 0) soul_progress_end(1);',
-'  return 1;',
-'}',
+                    struct stat stDst;
+
+                    int needCopy = 0;
+
+                    // destino no existe
+                    if (stat(dst, &stDst) != 0) {
+                        needCopy = 1;
+                    }
+                    // tamaño distinto
+                    else if (st.st_size != stDst.st_size) {
+                        needCopy = 1;
+                    }
+                    // mtime distinto (src más nuevo)
+                    else if (st.st_mtime > stDst.st_mtime) {
+                        needCopy = 1;
+                    }
+
+                    if (needCopy) {
+                        char line[8192];
+                        int n = snprintf(line, sizeof(line), "F|%s|%s\n", src, dst);
+                        if (n > 0) soul_atomic_append(soul_copy_list_path, line);
+                    }
+
+                    return;
+                }
+                            
+            ',
+            '}',
+            '',
+            'static uintptr_t soul_copyFolder_parallel(const char* src, const char* dst) {',
+            '  soul_worker_init();',
+            '',
+            '  char metaPath[256];',
+            '  char readyPath[256];',
+            '  char dirsReadyPath[256];',
+            '',
+            '  snprintf(readyPath, sizeof(readyPath), "/tmp/soul_copy_%d.ready", soul_job_id);',
+            '  snprintf(dirsReadyPath, sizeof(dirsReadyPath), "/tmp/soul_copy_%d.dirsready", soul_job_id);',
+            '  snprintf(soul_copy_list_path, sizeof(soul_copy_list_path), "/tmp/soul_copy_%d.lst", soul_job_id);',
+            '  snprintf(metaPath, sizeof(metaPath), "/tmp/soul_copy_%d.meta", soul_job_id);',
+            '',
+            '  if (soul_worker_id == 0) {',
+            '    unlink(readyPath);',
+            '    unlink(dirsReadyPath);',
+            '',
+            '    int fd = (int)syscall(SYS_openat, AT_FDCWD, soul_copy_list_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+            '    if (fd >= 0) syscall(SYS_close, fd);',
+            '',
+            '    soul_progress_begin("scan");',
+            '    soul_copy_collect(src, dst);',
+            '    soul_progress_end(1);',
+            '',
+            '    soul_copy_total_files = 0;',
+            '    FILE* cf = fopen(soul_copy_list_path, "r");',
+            '    if (cf) {',
+            '      char line[8192];',
+            '      while (fgets(line, sizeof(line), cf)) {',
+            '        if (line[0] == \'F\' && line[1] == \'|\') soul_copy_total_files++;',
+            '      }',
+            '      fclose(cf);',
+            '    }',
+            '',
+            '    FILE* mf = fopen(metaPath, "w");',
+            '    if (mf) {',
+            '      fprintf(mf, "%lld\\n", (long long)soul_copy_total_files);',
+            '      fclose(mf);',
+            '    }',
+            '',
+            '    fd = (int)syscall(SYS_openat, AT_FDCWD, readyPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+            '    if (fd >= 0) syscall(SYS_close, fd);',
+            '  }',
+            '',
+            '  while (access(readyPath, F_OK) != 0) usleep(1000);',
+            '',
+            '  FILE* mf = fopen(metaPath, "r");',
+            '  if (!mf) return 0;',
+            '  fscanf(mf, "%" SCNd64, &soul_copy_total_files);',
+            '  fclose(mf);',
+            '',
+            '  int workers = soul_worker_count;',
+            '  int wid = soul_worker_id;',
+            '',
+            '  int files_per_worker = (soul_copy_total_files + workers - 1) / workers;',
+            '  int start = wid * files_per_worker;',
+            '  int end   = start + files_per_worker;',
+            '  if (end > soul_copy_total_files) end = soul_copy_total_files;',
+            '',
+            '  if (wid == 0) soul_progress_begin("copy");',
+            '',
+            '  FILE* f = fopen(soul_copy_list_path, "r");',
+            '  if (!f) {',
+            '    if (wid == 0) soul_progress_end(0);',
+            '    return 0;',
+            '  }',
+            '',
+            '  char line[8192];',
+            '',
+            '  if (wid == 0) {',
+            '    while (fgets(line, sizeof(line), f)) {',
+            '      if (line[0] == \'D\' && line[1] == \'|\') {',
+            '        char* path = line + 2;',
+            '        char* nl = strchr(path, \'\\n\');',
+            '        if (nl) *nl = 0;',
+            '        syscall(SYS_mkdirat, AT_FDCWD, path, 0755);',
+            '      }',
+            '    }',
+            '',
+            '    int fd2 = (int)syscall(SYS_openat, AT_FDCWD, dirsReadyPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);',
+            '    if (fd2 >= 0) syscall(SYS_close, fd2);',
+            '  }',
+            '',
+            '  while (access(dirsReadyPath, F_OK) != 0) usleep(1000);',
+            '',
+            '  rewind(f);',
+            '  int64_t fileIdx = 0;',
+            '',
+            '  while (fgets(line, sizeof(line), f)) {',
+            '    if (line[0] == \'F\' && line[1] == \'|\') {',
+            '      if (fileIdx >= start && fileIdx < end) {',
+            '        char* p = line + 2;',
+            '        char* sep = strchr(p, \'|\');',
+            '        if (sep) {',
+            '          *sep = 0;',
+            '          char* srcP = p;',
+            '          char* dstP = sep + 1;',
+            '          char* nl = strchr(dstP, \'\\n\');',
+            '          if (nl) *nl = 0;',
+            '          
+                        if (!soul_copy_verify(srcP, dstP, soul_copy_verify_enabled)) {
+
+                            soul_copy_errors++;
+
+                            dprintf(2, "[copy] integrity mismatch: %s\n", srcP);
+
+                            if (soul_copy_fail_fast) {
+                                fclose(f);
+                                if (wid == 0) soul_progress_end(0);
+                                exit(1);  // matar worker inmediatamente
+                            }
+
+                            // modo tolerante → continuar
+                        }
+       
+            ',
+            '        }',
+            '      }',
+            '      fileIdx++;',
+            '      if (fileIdx >= end) break;',
+            '    }',
+            '  }',
+            '',
+            '  fclose(f);',
+            '',
+            '  
+                if (wid == 0) {
+                    if (soul_copy_errors > 0)
+                        soul_progress_end(0);
+                    else
+                        soul_progress_end(1);
+                }
+
+                return soul_copy_errors == 0 ? 1 : 0;
+            ',
+            '}',
 
 
 
@@ -2523,7 +3084,7 @@ final class CEmitter
             'dir_close', 'net_close',
             'move', 'append', 'copy',
             'write', 'close', 'remove', 'parallelRun', 'parallelWait',
-            'copyFolder', 'backup', 
+            'copyFolder', 'backup', 'removeByExt', 'removeOlderThan', 'removeBiggerThan'
         ];
 
 
@@ -2559,6 +3120,72 @@ final class CEmitter
 
             return "  soul_mkdir((const char*)r[$pi]);";
         }
+
+        if ($name === 'analyze') {
+            if (count($argsOperands) !== 2 || $dstReg === null) {
+                return '  /* ERROR: analyze(path, topN) */';
+            }
+
+            [$path, $n] = $argsOperands;
+
+            $pi = $this->regIndex($path);
+            $ni = $this->regIndex($n);
+            $di = $this->regIndex($dstReg);
+
+            return "  r[$di] = soul_analyze((const char*)r[$pi], (int64_t)r[$ni]);";
+        }        
+
+        if ($name === 'analyzeFiles') {
+            return $this->emitUnaryCall('soul_an_files', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeDirs') {
+            return $this->emitUnaryCall('soul_an_dirs', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeSize') {
+            return $this->emitUnaryCall('soul_an_size', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeExtCount') {
+            return $this->emitUnaryCall('soul_an_ext_count', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeExtName') {
+            return $this->emitBinaryCall('soul_an_ext_name', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeExtFiles') {
+            return $this->emitBinaryCall('soul_an_ext_files', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeExtSize') {
+            return $this->emitBinaryCall('soul_an_ext_size', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeTopCount') {
+            return $this->emitUnaryCall('soul_an_top_count', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeTopPath') {
+            return $this->emitBinaryCall('soul_an_top_path', $argsOperands, $dstReg);
+        }
+
+        if ($name === 'analyzeTopSize') {
+            return $this->emitBinaryCall('soul_an_top_size', $argsOperands, $dstReg);
+        }
+
+
+
+        if ($name === 'now') {
+            if ($dstReg === null) {
+                return '  /* ERROR: now must return int */';
+            }
+
+            $di = $this->regIndex($dstReg);
+            return "  r[$di] = soul_now();";
+        }
+
 
         if ($name === 'overview') {
             if (count($argsOperands) !== 1 || $dstReg === null) {
@@ -3231,6 +3858,41 @@ final class CEmitter
             return "  soul_removeTree((const char*)r[$pi]);";
         }
 
+        if ($name === 'removeByExt') {
+            if (count($argsOperands) !== 2) {
+                return '  /* ERROR: removeByExt expects 2 args */';
+            }
+
+            [$path, $ext] = $argsOperands;
+
+            $this->assertReg($path, 'CALL_BUILTIN removeByExt');
+            $this->assertReg($ext,  'CALL_BUILTIN removeByExt');
+
+            $pi = $this->regIndex($path);
+            $ei = $this->regIndex($ext);
+
+            if ($dstReg !== null) {
+                $di = $this->regIndex($dstReg);
+                return "  r[$di] = soul_removeByExt((const char*)r[$pi], (const char*)r[$ei]);";
+            }
+
+            return "  soul_removeByExt((const char*)r[$pi], (const char*)r[$ei]);";
+        }
+
+        if ($name === 'removeOlderThan') {
+            [$path, $sec] = $argsOperands;
+            $pi = $this->regIndex($path);
+            $si = $this->regIndex($sec);
+            return "  soul_removeOlderThan((const char*)r[$pi], (int64_t)r[$si]);";
+        }
+
+        if ($name === 'removeBiggerThan') {
+            [$path, $sz] = $argsOperands;
+            $pi = $this->regIndex($path);
+            $si = $this->regIndex($sz);
+            return "  soul_removeBiggerThan((const char*)r[$pi], (int64_t)r[$si]);";
+        }        
+
         if ($name === 'http_get') {
             // http_get(ip, port, path) -> netconn
             if (count($argsOperands) !== 3 || $dstReg === null) {
@@ -3394,11 +4056,12 @@ final class CEmitter
 
             if ($dstReg !== null) {
                 $ri = $this->regIndex($dstReg);
-                return "  r[$ri] = soul_backupFolder((const char*)r[$si], (const char*)r[$di]);";
+                return "  r[$ri] = soul_copyFolder((const char*)r[$si], (const char*)r[$di]);";
             }
 
-            return "  soul_backupFolder((const char*)r[$si], (const char*)r[$di]);";
+            return "  soul_copyFolder((const char*)r[$si], (const char*)r[$di]);";
         }
+
 
         if ($name === 'dir_close') {
             if (count($argsOperands) !== 1) {
@@ -3413,6 +4076,27 @@ final class CEmitter
         // (exists/listdir/copy...) vendrán cuando bajemos a syscalls o libc.
         return '  /* TODO builtin: ' . $name . ' */';
     }
+
+    private function emitUnaryCall(string $fn, array $args, IrReg $dst): string
+    {
+        $a0 = $this->regIndex($args[0]);
+        $di = $this->regIndex($dst);
+
+        return "  r[$di] = (uintptr_t)$fn(r[$a0]);";
+    }
+
+
+
+    private function emitBinaryCall(string $fn, array $args, IrReg $dst): string
+    {
+        $a0 = $this->regIndex($args[0]);
+        $a1 = $this->regIndex($args[1]);
+        $di = $this->regIndex($dst);
+
+        return "  r[$di] = (uintptr_t)$fn(r[$a0], r[$a1]);";
+    }
+
+
 
     private function emitExit(array $ops): string
     {
@@ -3443,8 +4127,11 @@ final class CEmitter
                 'stat','isfile','isdir','http_get', 'net_read', 'net_close',
                 'open','close', 'remove', 'mtime', 'buildstr', 'mkdir',
                 'workerId', 'workerCount', 'atomicCounter', 'atomicAppend',
-                'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree', 'overview', 'overviewSummary',
+                'argc', 'argv', 'arg', 'toStr', 'toInt', 'removeTree', 'overview', 'overviewSummary', 'now',
                 'walk', 'walk_next', 'walk_close', 'json_encode',
+                'analyze', 'analyzeFiles', 'analyzeDirs', 'analyzeSize',
+                'analyzeExtCount', 'analyzeExtName', 'analyzeExtFiles', 'analyzeExtSize',
+                'analyzeTopCount', 'analyzeTopPath', 'analyzeTopSize',
             ], true)) return true;
 
         }
