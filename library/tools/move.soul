@@ -1,0 +1,37 @@
+##
+Move folder
+usage: soul run move.soul --folderSrc {source_folder} --folderDst {destination_folder}
+##
+
+str src = arg("--folderSrc")
+str dst = arg("--folderDst")
+
+if src == "":
+    printStr("ERROR: missing --folderSrc or --folderDst")
+    return
+
+if dst == "":    
+    printStr("ERROR: missing --folderSrc or --folderDst")
+    return
+
+mkdir(dst)
+
+diriter it = listdir(src)
+
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+
+    str from = join(src, name)
+    str to   = join(dst, name)
+    move(from, to)
+
+dir_close(it)
+
+rmdir(src)
+
+printStr("Move completed successfully")
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

@@ -1,0 +1,51 @@
+##
+Recorre recursivamente un directorio y lista todos los ficheros
+uso: soul run walk_list.soul --folder {ruta} --find [file]
+##
+
+str folder = arg("--folder")
+
+str find = arg("--find")
+str found = ""
+
+printStr("Walking:")
+printStr(folder)
+printStr("")
+
+diriter it = walk(folder)
+
+while true:
+    str p = walk_next(it)
+    if p == 0:
+        break
+
+    if find !="":
+        if endswith(p, find):
+            found = buildstr(found, p, "
+")
+
+
+    any st = stat(p)
+    if isdir(st):
+        printStr(p)
+
+walk_close(it)
+
+if find !="":
+    if found !="":
+        printStr(" ")
+        printStr("Found in this folder:")
+        printStr(found)
+
+if find == "":
+        printStr(" ")        
+        printStr("Not found:")
+        printStr(find)
+
+
+printStr("")
+printStr("Finished.")
+
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

@@ -1,0 +1,22 @@
+##
+Deletes files bigger than threshold
+##
+
+str folder = arg("--folder")
+str password  = arg("--password")
+int minSize    = toInt(arg("--minSize "))
+
+bool ok = true
+
+if startswith(password, "CONFIRM_DELETE"):
+    printStr("Password protection confirmed")
+else:
+    printStr("PASSWORD PROTECTION NOT APPROVED")
+    ok = false
+
+if ok:
+    if folder != "":
+        printStr("Removing big files...")
+        removeBiggerThan(folder, minSize )
+
+printStr("DONE")

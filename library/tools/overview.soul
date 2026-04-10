@@ -1,0 +1,16 @@
+##
+Prueba básica del builtin overview
+Cuenta ficheros y carpetas recursivamente
+uso: soul run test_overview.soul --folder {ruta}
+##
+
+str folder = arg("--folder")
+
+printStr(folder)
+
+overviewinfo ov = overview(folder)
+str txt = overviewSummary(ov)
+printStr(txt)
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

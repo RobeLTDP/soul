@@ -1,0 +1,175 @@
+##
+SoulTools Analyze (NDJSON mode)
+Usage:
+  soul run analyzer --folder {path} [--top N] [--json MODE]
+  NDJSON = one valid JSON object per line. This is not a single JSON array.
+Modes:
+  --json 1   print NDJSON to stdout
+  --json 2   save NDJSON to ./analyzer.ndjson
+##
+
+str folder = arg("--folder")
+if folder == "":
+    printStr("ERROR: missing --folder")
+    return
+
+int topN = 10
+str topArg = arg("--top")
+if topArg != "":
+    topN = toInt(topArg)
+
+int jsonMode = 0
+str jsonArg = arg("--json")
+if jsonArg != "":
+    jsonMode = toInt(jsonArg)
+
+analyzeinfo a = analyze(folder, topN)
+
+int files = analyzeFiles(a)
+int dirs  = analyzeDirs(a)
+int totalSize = analyzeSize(a)
+
+str out = ""
+str nl = "
+"
+
+if jsonMode == 1:
+
+    str p0 = json_pair_str("type", "summary")
+    str p1 = json_pair_str("folder", folder)
+    str p2 = json_pair_int("files", files)
+    str p3 = json_pair_int("dirs", dirs)
+    str p4 = json_pair_int("sizeBytes", totalSize)
+
+    printStr(json_object(p0, p1, p2, p3, p4))
+
+    int n = analyzeExtCount(a)
+    int i = 0
+
+    while i < n:
+
+        str ext = analyzeExtName(a, i)
+        int cnt = analyzeExtFiles(a, i)
+        int sz  = analyzeExtSize(a, i)
+
+        str e0 = json_pair_str("type", "ext")
+        str e1 = json_pair_str("ext", ext)
+        str e2 = json_pair_int("count", cnt)
+        str e3 = json_pair_int("sizeBytes", sz)
+
+        printStr(json_object(e0, e1, e2, e3))
+
+        i = i + 1
+
+    int tn = analyzeTopCount(a)
+    i = 0
+
+    while i < tn:
+
+        str path = analyzeTopPath(a, i)
+        int sz2 = analyzeTopSize(a, i)
+
+        str t0 = json_pair_str("type", "top")
+        str t1 = json_pair_str("path", path)
+        str t2 = json_pair_int("sizeBytes", sz2)
+
+        printStr(json_object(t0, t1, t2))
+
+        i = i + 1
+
+else:
+    if jsonMode == 2:
+
+        str p0 = json_pair_str("type", "summary")
+        str p1 = json_pair_str("folder", folder)
+        str p2 = json_pair_int("files", files)
+        str p3 = json_pair_int("dirs", dirs)
+        str p4 = json_pair_int("sizeBytes", totalSize)
+
+        out = buildstr(out, json_object(p0, p1, p2, p3, p4), nl)
+
+        int n = analyzeExtCount(a)
+        int i = 0
+
+        while i < n:
+
+            str ext = analyzeExtName(a, i)
+            int cnt = analyzeExtFiles(a, i)
+            int sz  = analyzeExtSize(a, i)
+
+            str e0 = json_pair_str("type", "ext")
+            str e1 = json_pair_str("ext", ext)
+            str e2 = json_pair_int("count", cnt)
+            str e3 = json_pair_int("sizeBytes", sz)
+
+            out = buildstr(out, json_object(e0, e1, e2, e3), nl)
+
+            i = i + 1
+
+        int tn = analyzeTopCount(a)
+        i = 0
+
+        while i < tn:
+
+            str path = analyzeTopPath(a, i)
+            int sz2 = analyzeTopSize(a, i)
+
+            str t0 = json_pair_str("type", "top")
+            str t1 = json_pair_str("path", path)
+            str t2 = json_pair_int("sizeBytes", sz2)
+
+            out = buildstr(out, json_object(t0, t1, t2), nl)
+
+            i = i + 1
+
+        write("analyzer.ndjson", out)
+        printStr("NDJSON saved to ./analyzer.ndjson")
+
+    else:
+
+        printStr("Analyzing:")
+        printStr(folder)
+        printStr("")
+
+        printStr("Files:")
+        printStr(toStr(files))
+
+        printStr("Dirs:")
+        printStr(toStr(dirs))
+
+        printStr("Size:")
+        printStr(toStr(totalSize))
+
+        printStr("")
+        printStr("Extensions:")
+
+        int n2 = analyzeExtCount(a)
+        int j = 0
+
+        while j < n2:
+
+            str ext2 = analyzeExtName(a, j)
+            int cnt2 = analyzeExtFiles(a, j)
+            int sz3  = analyzeExtSize(a, j)
+
+            printStr(buildstr(ext2, " -> ", toStr(cnt2), " files, ", toStr(sz3), " bytes"))
+
+            j = j + 1
+
+        printStr("")
+        printStr("Top biggest files:")
+
+        int tn2 = analyzeTopCount(a)
+        int k = 0
+
+        while k < tn2:
+
+            str p = analyzeTopPath(a, k)
+            int s = analyzeTopSize(a, k)
+
+            printStr(buildstr(p, " -> ", toStr(s)))
+
+            k = k + 1
+
+        printStr("")
+        printStr("Finished.")

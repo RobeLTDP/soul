@@ -1,0 +1,41 @@
+##
+Deletes a folder and all its contents
+##
+
+str folder = arg("--folder")
+str password = arg("--password")
+
+bool ok = true
+
+if startswith(password, "CONFIRM_DELETE"):
+    printStr("Password protection confirmed")
+else:
+    printStr("PASSWORD PROTECTION NOT APPROVED")
+    ok = false
+
+if folder == "":
+    ok = false
+
+if ok:    
+    printStr("REMOVING:")
+    printStr(folder)
+
+    overviewinfo ov = overview(folder)
+
+    int files = overviewFiles(ov)
+    int dirs  = overviewDirs(ov)
+    int size  = overviewSize(ov)
+
+    printStr(concat("Files: ", toStr(files)))
+    printStr(concat("Dirs:  ", toStr(dirs)))
+    printStr(concat("Size:  ", toStr(size)))
+    printStr("Starting delete...")
+    
+    if removeTree(folder) == false:
+        printStr("ERROR: removeTree failed")
+    else:
+        printStr("DONE")
+
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

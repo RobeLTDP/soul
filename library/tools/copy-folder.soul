@@ -1,0 +1,21 @@
+##
+Copy folders
+usage: soul run copyFolder  --folderSrc {source_folder} --folderDst {destination_folder}
+##
+
+str src  = arg("--folderSrc")
+str dst = arg("--folderDst")
+
+printStr("Copying...")
+
+printStr("Source:")
+printStr(src)
+printStr("Destination:")
+printStr(dst)
+
+copyFolder(src, dst)
+
+printStr("Finished.")
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

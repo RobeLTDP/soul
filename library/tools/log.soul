@@ -1,0 +1,58 @@
+##
+Create recursive JSON log for a tree
+Uso: soul run log.soul --folder {carpeta}
+##
+
+str folder = arg("--folder")
+if folder == "":
+    printStr("ERROR: missing --folder")
+    return
+
+str out = join(folder, "log.json")
+int f = open(out)
+
+write(f, "[")
+
+str sep = ""
+
+diriter it = walk(folder)
+
+while true:
+    str full = walk_next(it)
+    if full == 0:
+        break
+
+    statinfo st = stat(full)
+    if st == 0:
+        continue
+
+    int ts = mtime(full)
+
+    str name = full
+
+    str type = "file"
+    if isdir(st):
+        type = "folder"
+
+    str p0 = json_pair_str("type", type)
+    str p1 = json_pair_str("path", name)
+    str p2 = json_pair_int("mtime", ts)
+
+    str obj = json_object(p0, p1, p2)
+
+    write(f, sep)
+    write(f, obj)
+
+    sep = ","
+
+walk_close(it)
+
+write(f, "]")
+close(f)
+
+printStr("JSON written to:")
+printStr(out)
+
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

@@ -1,0 +1,45 @@
+##
+Deletes only files with given extension inside a folder (recursive, fast)
+##
+
+str folder    = arg("--folder")
+str password  = arg("--password")
+str extension = arg("--ext")
+
+bool ok = true
+
+if startswith(password, "CONFIRM_DELETE"):
+    printStr("Password protection confirmed")
+else:
+    printStr("PASSWORD PROTECTION NOT APPROVED")
+    ok = false
+
+if folder == "":
+    ok = false
+
+if extension == "":
+    ok = false
+
+
+if ok:
+
+    printStr("REMOVING FILTERED FILES FROM:")
+    printStr(folder)
+
+    overviewinfo ov = overview(folder)
+
+    printStr(concat("Files: ", toStr(overviewFiles(ov))))
+    printStr(concat("Dirs:  ", toStr(overviewDirs(ov))))
+    printStr(concat("Size:  ", toStr(overviewSize(ov))))
+
+    printStr("Deleting...")
+
+    # 🔥 TODO el trabajo ocurre en C (ultra rápido)
+    removeByExt(folder, extension)
+
+    printStr("DONE")
+
+
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")

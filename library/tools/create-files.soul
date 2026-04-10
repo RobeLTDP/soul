@@ -1,0 +1,56 @@
+##
+Create files in a folder
+##
+
+str folder = arg("--folder")
+str count = arg("--count")
+str extension = arg("--ext")
+
+if folder == "":
+    printStr("ERROR: missing --folder")
+    return
+
+if count == "":
+    count = "100000"
+
+if extension == "":
+    extension = ".txt"  
+else:
+    extension = concat(".", extension)
+
+printStr(extension)
+
+int total = toInt(count)
+
+mkdir(folder)
+
+printStr(folder)
+printStr("Files:")
+printStr(toStr(total))
+printStr("Starting...")
+
+int i = 0
+int max = total
+int step = 50000
+
+while i < max:
+    str name = concat("file_", toStr(i))
+    name = concat(name, extension)
+
+    str path = concat(folder, "/")
+    path = concat(path, name)
+
+    file h = open(path)
+    write(h, "File created by Soul.")
+    close(h)
+
+    i = i + 1
+    
+    if i % step == 0:
+        str msg = concat("created: ", toStr(i))
+        printStr(msg)
+
+if workerId() == 0:
+    printStr("Finished.")
+    printStr("Built with Soul")
+    printStr("Create your own high-performance tools at soul-run.com")

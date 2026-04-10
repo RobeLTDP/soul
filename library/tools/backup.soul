@@ -1,0 +1,25 @@
+##
+Incremental backup for a source folder
+Usage: soul run backup.soul --folderSrc {source_folder} --folderDst {destination_folder}
+##
+
+str src = arg("--folderSrc")
+str dst = arg("--folderDst")
+
+printStr("Starting backup...")
+
+printStr("Source:")
+printStr(src)
+printStr("Destination:")
+printStr(dst)
+
+# Create destination folder
+mkdir(dst)
+
+# Execute backup
+backup(src, dst)
+
+printStr("Backup finished.")
+printStr(" ")
+printStr("Built with Soul")
+printStr("Create your own high-performance tools at soul-run.com")
