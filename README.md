@@ -1,255 +1,74 @@
-<<<<<<< HEAD
-# Soul — v0.1
+# Soul — Compiled Language for Filesystem Automation
 
-Soul is a **minimalist, low-level scripting language** focused on **system and filesystem operations**, designed to be **explicit, readable, and highly efficient** for practical tasks such as:
+**Write filesystem tools in a few lines. Compile to a standalone binary. Run anywhere Linux runs.**
 
-- massive file copying
-- backups and synchronization
-- directory tree cleanup
-- intensive filesystem processing
-- systems tooling
-
-Soul is not intended to be a general-purpose language.  
-It is a tool to **do hard jobs well**, in a predictable and controlled way.
+Soul is a compiled language designed specifically for filesystem operations — backup, cleanup, sync, analysis. It produces ultralight static binaries (16–30 KB) with no runtime, no interpreter, and no dependencies.
 
 ---
 
-## Design principles
+## Try it in 30 seconds
 
-### 1. Explicit simplicity
+No installation required. Mount any local folder and run:
 
-Soul avoids hidden inference and magical behavior.  
-Code must clearly state what it does.
-
-```soul
-int x = 5
+```bash
+docker run --rm -v "/your/local/folder:/data" soultools/overview:latest --folder /data
 ```
 
-is preferred over implicit behavior that is hard to reason about.
+You'll get a full file count, directory count, size breakdown, and extension summary in under a second.
 
 ---
 
-### 2. Filesystem as a first-class concept
+## Why Soul
 
-Soul is designed from the ground up to work with files and directories.  
-Not as an added library, but as a core part of the language.
+Python and Bash work fine at small scale. At 10K, 100K, or 1M files they break down — slow execution, complex error handling, runtime dependencies in every environment.
+
+Soul is built for exactly this problem: filesystem tasks that need to be fast, explicit, and deployable anywhere.
+
+**Benchmark — full folder scan and analysis, 210K files:**
+
+| Tool   | Time   |
+|--------|--------|
+| Bash   | 2.4s   |
+| Go     | 0.71s  |
+| **Soul**   | **0.39s**  |
+
+**Benchmark — incremental backup, ~1,600 files, 1.4 GB:**
+
+| Tool   | Time   |
+|--------|--------|
+| Python | 38s    |
+| Go     | 4.3s   |
+| **Soul**   | **1.9s**   |
+
+Measured with `/usr/bin/time -v` on Linux, NVMe SSD, cold cache. Soul binaries compiled with `musl-gcc -O3 -static -s`.
+
+---
+
+## Docker image size
+
+Soul compiles to fully static binaries via musl-gcc. Docker images use `FROM scratch` — no base OS, no runtime, no layers.
+
+| Tool       | Soul binary | Soul Docker (scratch) | Go (Docker) | Python (Docker) |
+|------------|-------------|----------------------|-------------|-----------------|
+| hello-world | 16 KB      | 44 KB                | ~2 MB       | ~50 MB          |
+| overview   | 17 KB       | 68 KB                | ~4 MB       | ~50 MB          |
+| backup     | 22 KB       | 130 KB               | ~6 MB       | ~55 MB          |
+
+---
+
+## What Soul code looks like
+
+Incremental backup of a folder — 6 lines of logic:
 
 ```soul
-diriter it = listdir(src)
+str src = arg("--folderSrc")
+str dst = arg("--folderDst")
 
-while true:
-    str name = dir_next(it)
-    if name == 0:
-        break
-
-    copy(concat(src, name), concat(dst, name))
-
-dir_close(it)
+mkdir(dst)
+backup(src, dst)
 ```
 
-The filesystem is not an external API: it is part of the language's mental model.
-
----
-
-### 3. Full control of execution flow
-
-Soul avoids implicit exceptions and hidden control paths.  
-Error handling and decision flow are **linear, explicit, and readable**.
-
-The language favors code that can be read as a clear sequence of actions.
-
----
-
-### 4. Parallelism as intention
-
-Soul introduces **structural parallelism**:
-
-```soul
-parallel 4:
-    copyFolder(src, dst)
-```
-
-In v0.1, `parallel` does **not execute real parallelism**.  
-It expresses intent and structure, preparing code for future concurrent execution **without syntactic changes**.
-
----
-
-### 5. Small and stable syntax
-
-Soul avoids uncontrolled growth.  
-Syntax is frozen early and only expanded when it brings clear value.
-
-Stability is an explicit design decision.
-
----
-
-## Main features (v0.1)
-
-- Indentation-based syntax
-- Explicit typing
-- Classic control flow (`if`, `while`, `for`)
-- Compilation to C
-- Custom runtime based on syscalls
-- Efficient directory iteration
-- High-performance filesystem operations
-- Built-in progress feedback for long-running tasks
-- Prepared for real parallelism
-
----
-
-## Supported types (v0.1)
-
-| Type    | Description |
-|---------|-------------|
-| int     | Integer |
-| bool    | Boolean |
-| str     | String (including filesystem paths) |
-| diriter | Directory iterator |
-
-> In Soul, filesystem paths are represented as `str`.
-
----
-
-## Basic syntax
-
-### Variables
-
-```soul
-int x = 5
-str folder = arg("--folder")
-```
-
-### Conditionals
-
-```soul
-if x > 3:
-    printStr("greater")
-else:
-    printStr("lower")
-```
-
-### Loops
-
-#### while
-
-```soul
-int i = 0
-while i < 5:
-    print(i)
-    i = i + 1
-```
-
-#### for (structural)
-
-```soul
-for str f in files:
-    printStr(f)
-```
-
----
-
-## Standard library (excerpt)
-
-### Filesystem
-
-| Function | Description |
-|---------|-------------|
-| listdir(path) | Open directory iterator |
-| dir_next(it) | Return next entry |
-| dir_close(it) | Close iterator |
-| copy(src, dst) | Copy file |
-| copyFolder(src, dst) | Recursive directory copy |
-| remove(path) | Remove file |
-| removeTree(path) | Remove full directory tree |
-| mkdir(path) | Create directory |
-
-### Strings and utilities
-
-| Function | Description |
-|---------|-------------|
-| print(x) | Print integer |
-| printStr(s) | Print string |
-| concat(a, b) | Concatenate strings |
-| startswith(a, b) | Prefix check |
-| endswith(a, b) | Suffix check |
-| length(s) | Length |
-
-### CLI
-
-| Function | Description |
-|---------|-------------|
-| arg(name) | Get CLI argument |
-| arg(name, def) | Argument with default value |
-
----
-
-## Tooling
-
-- `soul run` — execute Soul script
-- `soul build` — compile to binary
-- Custom runtime with no external dependencies
-- Real-world examples in `/library`
-
----
-
-## Project status
-
-- Stable lexer
-- Stable parser
-- Functional analyzer
-- Stable C compilation
-- Custom runtime
-- Syntax frozen (v0.1)
-- Real-world scripts used for large copy and delete operations
-
-Soul is already used to **copy and delete tens of gigabytes** with progress feedback.
-
----
-
-## Mid-term vision
-
-- Real parallelism
-- Execution planning (`soul plan`)
-- Binary export
-- Extended standard library
-- Compilation and distribution platform
-
-Soul is a **systems tool**, not a general-purpose language.
-=======
-# Soul — v0.1
-
-Soul is a **minimalist, low-level scripting language** focused on **system and filesystem operations**, designed to be **explicit, readable, and highly efficient** for practical tasks such as:
-
-- massive file copying
-- backups and synchronization
-- directory tree cleanup
-- intensive filesystem processing
-- systems tooling
-
-Soul is not intended to be a general-purpose language.  
-It is a tool to **do hard jobs well**, in a predictable and controlled way.
-
----
-
-## Design principles
-
-### 1. Explicit simplicity
-
-Soul avoids hidden inference and magical behavior.  
-Code must clearly state what it does.
-
-```soul
-int x = 5
-```
-
-is preferred over implicit behavior that is hard to reason about.
-
----
-
-### 2. Filesystem as a first-class concept
-
-Soul is designed from the ground up to work with files and directories.  
-Not as an added library, but as a core part of the language.
+Walk a directory and copy files explicitly:
 
 ```soul
 diriter it = listdir(src)
@@ -259,177 +78,88 @@ while true:
     if name == 0:
         break
 
-    copy(concat(src, name), concat(dst, name))
+    str from = join(src, name)
+    str to   = join(dst, name)
+    move(from, to)
 
 dir_close(it)
+
+rmdir(src)
 ```
 
-The filesystem is not an external API: it is part of the language's mental model.
-
----
-
-### 3. Full control of execution flow
-
-Soul avoids implicit exceptions and hidden control paths.  
-Error handling and decision flow are **linear, explicit, and readable**.
-
-The language favors code that can be read as a clear sequence of actions.
-
----
-
-### 4. Parallelism as intention
-
-Soul introduces **structural parallelism**:
+Delete files by extension with an explicit confirmation gate:
 
 ```soul
-parallel 4:
-    copyFolder(src, dst)
-```
+str folder   = arg("--folder")
+str ext      = arg("--ext")
+str password = arg("--password")
 
-In v0.1, `parallel` does **not execute real parallelism**.  
-It expresses intent and structure, preparing code for future concurrent execution **without syntactic changes**.
-
----
-
-### 5. Small and stable syntax
-
-Soul avoids uncontrolled growth.  
-Syntax is frozen early and only expanded when it brings clear value.
-
-Stability is an explicit design decision.
-
----
-
-## Main features (v0.1)
-
-- Indentation-based syntax
-- Explicit typing
-- Classic control flow (`if`, `while`, `for`)
-- Compilation to C
-- Custom runtime based on syscalls
-- Efficient directory iteration
-- High-performance filesystem operations
-- Built-in progress feedback for long-running tasks
-- Prepared for real parallelism
-
----
-
-## Supported types (v0.1)
-
-| Type    | Description |
-|---------|-------------|
-| int     | Integer |
-| bool    | Boolean |
-| str     | String (including filesystem paths) |
-| diriter | Directory iterator |
-
-> In Soul, filesystem paths are represented as `str`.
-
----
-
-## Basic syntax
-
-### Variables
-
-```soul
-int x = 5
-str folder = arg("--folder")
-```
-
-### Conditionals
-
-```soul
-if x > 3:
-    printStr("greater")
-else:
-    printStr("lower")
-```
-
-### Loops
-
-#### while
-
-```soul
-int i = 0
-while i < 5:
-    print(i)
-    i = i + 1
-```
-
-#### for (structural)
-
-```soul
-for str f in files:
-    printStr(f)
+if startswith(password, "CONFIRM_DELETE"):
+    removeByExt(folder, ext)
 ```
 
 ---
 
-## Standard library (excerpt)
+## Available tools
 
-### Filesystem
+Ready-to-run binaries and Docker images for the most common filesystem tasks:
 
-| Function | Description |
-|---------|-------------|
-| listdir(path) | Open directory iterator |
-| dir_next(it) | Return next entry |
-| dir_close(it) | Close iterator |
-| copy(src, dst) | Copy file |
-| copyFolder(src, dst) | Recursive directory copy |
-| remove(path) | Remove file |
-| removeTree(path) | Remove full directory tree |
-| mkdir(path) | Create directory |
+| Tool | Description | Binary size |
+|------|-------------|-------------|
+| `overview` | File count, size, extension breakdown | 17 KB |
+| `analyzer` | Full scan: extensions + biggest files | 30 KB |
+| `backup` | Incremental backup with parallel workers | 22 KB |
+| `copy-folder` | Recursive folder copy, 4 parallel workers | 22 KB |
+| `move` | Move folder contents | 21 KB |
+| `create-files` | Generate files for testing | 17 KB |
+| `log` | Walk directory tree and write JSON log | — |
+| `delete-by-extension` | Delete files by extension, password-gated | 21 KB |
+| `delete-older-than` | Delete files older than N days | — |
+| `delete-folder` | Remove folder tree, password-gated | — |
 
-### Strings and utilities
-
-| Function | Description |
-|---------|-------------|
-| print(x) | Print integer |
-| printStr(s) | Print string |
-| concat(a, b) | Concatenate strings |
-| startswith(a, b) | Prefix check |
-| endswith(a, b) | Suffix check |
-| length(s) | Length |
-
-### CLI
-
-| Function | Description |
-|---------|-------------|
-| arg(name) | Get CLI argument |
-| arg(name, def) | Argument with default value |
+Download binaries or Docker images at [soul-run.com/tools](https://soul-run.com/#features).
 
 ---
 
-## Tooling
+## Key characteristics
 
-- `soul run` — execute Soul script
-- `soul build` — compile to binary
-- Custom runtime with no external dependencies
-- Real-world examples in `/library`
+- **Filesystem-first** — files, folders and paths are core primitives, not library calls
+- **Compiled to native binary** — near C-level performance, no interpreter overhead
+- **Static linking via musl-gcc** — single executable, zero dependencies
+- **Explicit by design** — readable syntax, clear control flow, no hidden behavior
+- **Built for Linux** — servers, containers, and CI environments where these workloads run
+- **Scratch-ready Docker images** — FROM scratch, no base OS layer
+
+---
+
+## Build your own tools
+
+Soul is not just a toolbox — it's a language you can write in.
+
+The online compiler at [soul-run.com](https://soul-run.com) lets you write Soul code in the browser, compile to a native binary or Docker image, and download it directly. Free to try after registration.
 
 ---
 
 ## Project status
 
-- Stable lexer
-- Stable parser
-- Functional analyzer
-- Stable C compilation
-- Custom runtime
-- Syntax frozen (v0.1)
-- Real-world scripts used for large copy and delete operations
-
-Soul is already used to **copy and delete tens of gigabytes** with progress feedback.
+- Stable lexer, parser and compiler (C backend)
+- Custom runtime (syscall-based, no libc dependency)
+- Syntax stable at v0.1
+- Production-tested on large filesystem workloads
+- 13 tools available, binary + Docker
 
 ---
 
-## Mid-term vision
+## Roadmap
 
-- Real parallelism
-- Execution planning (`soul plan`)
-- Binary export
-- Extended standard library
-- Compilation and distribution platform
+- `soul plan` — preview execution with no side effects
+- Extended standard library (string, network primitives)
+- Real parallel execution primitives in the language
 
-Soul is a **systems tool**, not a general-purpose language.
->>>>>>> 0e82548 (Update README: English documentation for Soul v0.1)
+---
+
+## Links
+
+- Website and docs: [soul-run.com](https://soul-run.com)
+- Online compiler: [soul-run.com/register](https://soul-run.com/register)
+- Community and issues: [GitHub Discussions](https://github.com/RobeLTDP/soulc/discussions)
