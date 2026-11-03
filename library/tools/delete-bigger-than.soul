@@ -4,9 +4,17 @@ Deletes files bigger than threshold
 
 str folder = arg("--folder")
 str password  = arg("--password")
-int minSize    = toInt(arg("--minSize "))
+str minArg    = arg("--minSize")
+int minSize   = toInt(minArg)
 
 bool ok = true
+
+# The flag used to be read as "--minSize " (with a trailing space), which never
+# matched, so the threshold silently became 0 and every non-empty file was
+# deleted. Refuse to run without an explicit threshold.
+if minArg == "":
+    printStr("ERROR: missing --minSize {bytes}")
+    ok = false
 
 if startswith(password, "CONFIRM_DELETE"):
     printStr("Password protection confirmed")

@@ -217,5 +217,40 @@ if ($noE2e || !$hasGcc) {
     shell_exec('rm -rf ' . escapeshellarg($dir));
 }
 
+// ---------------------------------------------------------------------------
+if (!$noE2e && $hasGcc && t_wanted('runtime/delete_bigger_than')) {
+    // delete-bigger-than must honour --minSize, and refuse to run without it.
+    $o = [];
+    exec('cd ' . escapeshellarg(SOUL_ROOT) . ' && php soulc.php build library/tools/delete-bigger-than.soul 2>&1', $o, $rc);
+    $bin = SOUL_ROOT . '/out/tools/delete-bigger-than';
+    if ($rc !== 0 || !is_file($bin)) {
+        t_report('runtime/delete_bigger_than', false, "build failed:\n" . implode("\n", $o));
+    } else {
+        $mk = function () {
+            $d = sys_get_temp_dir() . '/soul-dbt-' . getmypid() . '-' . mt_rand();
+            mkdir($d, 0777, true);
+            file_put_contents("$d/small.bin", str_repeat('x', 100));
+            file_put_contents("$d/big.bin", str_repeat('x', 5000));
+            return $d;
+        };
+        $names = fn($d) => array_values(array_diff(scandir($d), ['.', '..']));
+
+        $d1 = $mk();
+        exec(escapeshellarg($bin) . ' --folder ' . escapeshellarg($d1) . ' --password CONFIRM_DELETE --minSize 1000 2>&1');
+        $with = $names($d1);
+
+        $d2 = $mk();
+        exec(escapeshellarg($bin) . ' --folder ' . escapeshellarg($d2) . ' --password CONFIRM_DELETE 2>&1');
+        $without = $names($d2);
+
+        sort($without);
+        $ok = $with === ['small.bin'] && $without === ['big.bin', 'small.bin'];
+        t_report('runtime/delete_bigger_than', $ok,
+            "with --minSize 1000 left: [" . implode(', ', $with) . "] (want [small.bin])\n" .
+            "without --minSize left: [" . implode(', ', $without) . "] (want [big.bin, small.bin])");
+        shell_exec('rm -rf ' . escapeshellarg($d1) . ' ' . escapeshellarg($d2));
+    }
+}
+
 echo "\n$pass passed, $fail failed" . ($skip ? ", $skip skipped" : '') . "\n";
 exit($fail === 0 ? 0 : 1);
