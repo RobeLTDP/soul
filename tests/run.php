@@ -187,5 +187,35 @@ foreach (glob(__DIR__ . '/plan/*.soul') as $file) {
                      : "missing: " . implode(' | ', $missing) . "\n--- output ---\n" . $text);
 }
 
+// ---------------------------------------------------------------------------
+echo "\nRuntime behaviour (compiled tools)\n";
+if ($noE2e || !$hasGcc) {
+    echo "  SKIP  " . ($noE2e ? "--no-e2e given" : "gcc not found") . "\n";
+} elseif (t_wanted('runtime/analyzer_top')) {
+    // analyzer must list the biggest files largest-first, and no empty slots.
+    $dir = sys_get_temp_dir() . '/soul-test-' . getmypid();
+    @mkdir($dir . '/sub', 0777, true);
+    foreach (['a.txt' => 300, 'b.txt' => 900, 'sub/c.log' => 100, 'sub/d.log' => 700, 'e.txt' => 500] as $f => $n) {
+        file_put_contents("$dir/$f", str_repeat('x', $n));
+    }
+    $o = [];
+    exec('cd ' . escapeshellarg(SOUL_ROOT) . ' && php soulc.php build library/tools/analyzer.soul 2>&1', $o, $rc);
+    $bin = SOUL_ROOT . '/out/tools/analyzer';
+    if ($rc !== 0 || !is_file($bin)) {
+        t_report('runtime/analyzer_top', false, "build failed:\n" . implode("\n", $o));
+    } else {
+        $o = [];
+        exec(escapeshellarg($bin) . ' --folder ' . escapeshellarg($dir) . ' --top 10 2>&1', $o);
+        $text = implode("\n", $o);
+        preg_match_all('/^' . preg_quote($dir, '/') . '\/(\S+) -> (\d+)$/m', $text, $m, PREG_SET_ORDER);
+        $got = array_map(fn($x) => $x[1] . '=' . $x[2], $m);
+        $want = ['b.txt=900', 'sub/d.log=700', 'e.txt=500', 'a.txt=300', 'sub/c.log=100'];
+        $emptyLines = preg_match('/^ -> 0$/m', $text);
+        t_report('runtime/analyzer_top', $got === $want && !$emptyLines,
+            "expected: " . implode(', ', $want) . "\nactual:   " . implode(', ', $got) . ($emptyLines ? "\n(empty ' -> 0' lines present)" : ''));
+    }
+    shell_exec('rm -rf ' . escapeshellarg($dir));
+}
+
 echo "\n$pass passed, $fail failed" . ($skip ? ", $skip skipped" : '') . "\n";
 exit($fail === 0 ? 0 : 1);
