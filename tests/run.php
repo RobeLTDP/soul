@@ -13,6 +13,9 @@
  *       # expect-error: <text>       some error message must contain <text>
  *                                    (may be repeated; "Línea N: ..." pins a line)
  *
+ *   tests/plan/*.soul    run `soul plan` and check its report
+ *       # expect-plan: <text>        the plan output must contain <text>
+ *
  *   tests/e2e/*.soul     compile to a native binary and run it
  *       # expect-output: <text>      stdout must equal the expect-output lines
  *       # expect-build-error: <text> the build must fail and print <text>
@@ -158,6 +161,30 @@ if ($noE2e || !$hasGcc) {
         $expected = trim(implode("\n", $d['outputs']));
         t_report($name, $actual === $expected, "expected: " . json_encode($expected) . "\nactual:   " . json_encode($actual));
     }
+}
+
+// ---------------------------------------------------------------------------
+echo "\nPlan mode (tests/plan)\n";
+foreach (glob(__DIR__ . '/plan/*.soul') as $file) {
+    $base = basename($file, '.soul');
+    $name = 'plan/' . $base . '.soul';
+    if (!t_wanted($name)) continue;
+
+    $code = file_get_contents($file);
+    $want = [];
+    foreach (preg_split('/\r?\n/', $code) as $line) {
+        if (preg_match('/^#\s*expect-plan:\s?(.*)$/', $line, $m)) $want[] = $m[1];
+    }
+
+    $out = [];
+    exec('cd ' . escapeshellarg(SOUL_ROOT) . ' && php soulc.php plan '
+        . escapeshellarg('tests/plan/' . $base . '.soul') . ' 2>&1', $out, $code2);
+    $text = implode("\n", $out);
+
+    $missing = array_values(array_filter($want, fn($w) => !str_contains($text, $w)));
+    t_report($name, $want !== [] && $missing === [],
+        $want === [] ? "no '# expect-plan:' directive"
+                     : "missing: " . implode(' | ', $missing) . "\n--- output ---\n" . $text);
 }
 
 echo "\n$pass passed, $fail failed" . ($skip ? ", $skip skipped" : '') . "\n";

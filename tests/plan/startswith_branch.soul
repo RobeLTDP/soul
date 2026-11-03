@@ -1,0 +1,9 @@
+# expect-plan: printStr(gate open)
+# expect-plan: Risk level: LOW (read only)
+# startswith() used to evaluate to "false" in plan mode, so plan always took
+# the else branch. With a matching prefix it must take the then branch.
+str pw = "CONFIRM_DELETE_1"
+if startswith(pw, "CONFIRM_DELETE"):
+    printStr("gate open")
+else:
+    printStr("gate closed")

@@ -1,0 +1,6 @@
+# expect-plan: Risk level: UNKNOWN
+# expect-plan: WARNING: this plan is INCOMPLETE
+# expect-plan: - removeByExt
+# removeByExt is not simulated by `soul plan`. It used to be reported as
+# "LOW (read only)", which is the opposite of what the program does.
+removeByExt("/nonexistent-soul-test-dir", ".log")
