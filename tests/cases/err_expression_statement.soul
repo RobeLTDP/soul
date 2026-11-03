@@ -1,0 +1,3 @@
+# expect-error: Línea 3: Una expresión sin efecto no es una sentencia válida
+int x = 1
+x + 1

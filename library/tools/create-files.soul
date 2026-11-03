@@ -40,7 +40,7 @@ while i < max:
     str path = concat(folder, "/")
     path = concat(path, name)
 
-    file h = open(path)
+    int h = open(path)
     write(h, "File created by Soul.")
     close(h)
 

@@ -1,0 +1,2 @@
+# expect-error: Línea 2: 'return' no admite valor en v0.1
+return 1

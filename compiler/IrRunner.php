@@ -149,6 +149,11 @@ final class IrRunner
                 $this->regs[$dst->name] = $lit->value;
                 break;
 
+            case OpCode::EXIT:
+                // Detiene la ejecución (el bucle principal hace ip++ después).
+                $this->ip = PHP_INT_MAX - 1;
+                break;
+
             case OpCode::LOAD_VAR:
                 [$var, $dst] = $inst->operands;
                 $this->regs[$dst->name] = $this->vars[$var->name] ?? 0;

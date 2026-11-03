@@ -107,6 +107,11 @@ final class Compiler
         echo "== LEXER ==\n";
         $lexer = new Lexer($code);
         $tokens = $lexer->tokenize();
+
+        $lexErrors = $lexer->getErrors();
+        if (!empty($lexErrors)) {
+            throw new RuntimeException("LEXER ERRORS:\n" . implode("\n", $lexErrors));
+        }
         echo "Tokens OK\n";
 
         echo "== PARSER ==\n";
@@ -291,6 +296,11 @@ DOCKER;
         // Lexer
         $lexer = new Lexer($code);
         $tokens = $lexer->tokenize();
+
+        $lexErrors = $lexer->getErrors();
+        if (!empty($lexErrors)) {
+            throw new RuntimeException("LEXER ERRORS:\n" . implode("\n", $lexErrors));
+        }
 
         // Parser
         $parser = new Parser($tokens);

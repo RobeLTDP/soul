@@ -263,6 +263,15 @@ final class CEmitter
             //$line = $this->emitInstruction($program, $inst);
             $line = $this->emitInstruction($program, $inst, $i, $openHandleVars);
 
+            // El emisor señala llamadas mal formadas devolviendo un comentario
+            // C "/* ERROR ... */". Antes el binario se generaba igualmente y la
+            // llamada simplemente no hacía nada; ahora es un error de compilación.
+            if (str_contains($line, '/* ERROR') || str_contains($line, '/* TODO unsupported opcode')) {
+                throw new RuntimeException(
+                    "CEmitter: instrucción #$i ({$inst->opCode}) no se puede compilar: " . trim($line)
+                );
+            }
+
             if ($line !== '') {
                 $out[] = $line;
             }

@@ -20,6 +20,7 @@ require_once SOUL_ROOT . '/ast/Identifier.php';
 require_once SOUL_ROOT . '/ast/BreakStmt.php';
 require_once SOUL_ROOT . '/ast/StopStmt.php';
 require_once SOUL_ROOT . '/ast/ContinueStmt.php';
+require_once SOUL_ROOT . '/ast/ReturnStmt.php';
 require_once SOUL_ROOT . '/ast/ParallelStmt.php';
 
 
@@ -121,6 +122,12 @@ final class Lowerer
                     [IrOperand::label(end($this->breakStack))]
                 )
             );
+            return;
+        }
+
+        if ($stmt instanceof ReturnStmt) {
+            // Termina el programa: EXIT sin operando devuelve 0.
+            $this->program->add(new IrInstruction(OpCode::EXIT));
             return;
         }
 

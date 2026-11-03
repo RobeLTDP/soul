@@ -1,0 +1,2 @@
+# expect-error: Línea 2: Tipo desconocido 'file'
+file h = open("out.txt")

@@ -13,6 +13,7 @@ require_once SOUL_ROOT . '/ast/StopStmt.php';
 require_once SOUL_ROOT . '/ast/WhileStmt.php';
 require_once SOUL_ROOT . '/ast/BreakStmt.php';
 require_once SOUL_ROOT . '/ast/ContinueStmt.php';
+require_once SOUL_ROOT . '/ast/ReturnStmt.php';
 
 require_once SOUL_ROOT . '/ast/Identifier.php';
 require_once SOUL_ROOT . '/ast/Literal.php';
@@ -67,9 +68,17 @@ class Parser
     {
 
         // Ignorar tokens estructurales
-        if ($this->match("NEWLINE", "INDENT", "DEDENT")) {        
+        if ($this->match("NEWLINE", "DEDENT")) {
             return null;
-        }        
+        }
+
+        // Un INDENT al comienzo de una sentencia no abre ningún bloque
+        // (los bloques consumen su INDENT en parseBlock).
+        if ($this->check("INDENT")) {
+            $this->error("Indentación inesperada");
+            $this->advance();
+            return null;
+        }
         // Declaración de variable: TYPE IDENTIFIER '=' expr
         if ($this->match("TYPE")) {
             return $this->parseVarDeclFromTypeToken($this->previous());
@@ -77,7 +86,18 @@ class Parser
 
 
         if ($this->match("CONTINUE")) {
+            $this->endOfStatement();
             return new ContinueStmt();
+        }
+
+        if ($this->match("RETURN")) {
+            if (!$this->check("NEWLINE") && !$this->check("DEDENT") && !$this->check("EOF")) {
+                $this->error("'return' no admite valor en v0.1");
+                $this->synchronize();
+                return new ReturnStmt();
+            }
+            $this->endOfStatement();
+            return new ReturnStmt();
         }
 
         if ($this->match("IF")) {
@@ -101,7 +121,16 @@ class Parser
         }
 
         if ($this->match("BREAK")) {
+            $this->endOfStatement();
             return new BreakStmt();
+        }
+
+        // `tipoDesconocido nombre = expr`: sin esta comprobación el tipo se
+        // descartaba y `nombre = expr` se tomaba como asignación implícita.
+        if ($this->check("IDENTIFIER") && $this->checkAt(1, "IDENTIFIER") && $this->checkAt(2, "EQUALS")) {
+            $this->error("Tipo desconocido '{$this->peek()->value}' (tipos: int, bool, str, statinfo, diriter, overviewinfo, analyzeinfo, netconn)");
+            $this->synchronize();
+            return null;
         }
 
         // Asignación: IDENTIFIER '=' expr
@@ -109,12 +138,14 @@ class Parser
             $nameTok = $this->advance();
             $this->consume("EQUALS", "Se esperaba '=' en asignación");
             $value = $this->parseExpression();
-            $this->match("NEWLINE"); // ← AÑADIR
+            $this->endOfStatement();
             return new Assignment($nameTok->value, $value);
         }
 
 
         // ExprStmt / CheckExprStmt
+        $stmtLine = $this->peek()->line ?? 0;
+        $errorsBefore = count($this->errors);
         $expr = $this->parseExpression();
 
         // expr !! stop "msg"
@@ -126,18 +157,23 @@ class Parser
                 $msg = $this->parseExpression();
             }
 
-            $this->match("NEWLINE");
+            $this->endOfStatement();
             return new CheckExpr($expr, new StopStmt($msg));
         }
 
         // statement expresión: SOLO llamadas
-        $this->match("NEWLINE");
+        $this->endOfStatement();
 
         if ($expr instanceof CallExpr) {
             return $expr;
         }
 
-        // cualquier otra expresión NO es statement
+        // Cualquier otra expresión no es una sentencia. Antes se descartaba en
+        // silencio (así se perdía `return` y cualquier typo como `x + 1`).
+        // Si parseExpression ya informó de un error, no lo duplicamos.
+        if (count($this->errors) === $errorsBefore) {
+            $this->errorAt($stmtLine, "Una expresión sin efecto no es una sentencia válida (solo se permiten llamadas)");
+        }
         return null;
     }
 
@@ -166,7 +202,7 @@ class Parser
         $nameTok = $this->consume("IDENTIFIER", "Se esperaba nombre de variable tras el tipo");
         $this->consume("EQUALS", "Se esperaba '=' en declaración de variable");
         $value = $this->parseExpression();
-        $this->match("NEWLINE"); // ← AÑADIR
+        $this->endOfStatement();
         return new VarDecl($type, $nameTok->value, $value);
 
     }
@@ -183,7 +219,7 @@ class Parser
             $msg = $this->parseExpression();
         }
 
-        $this->match("NEWLINE"); // ← FALTABA ESTO
+        $this->endOfStatement();
         return new StopStmt($msg);
     }
 
@@ -443,6 +479,25 @@ class Parser
         $this->errors[] = "Línea {$line}: {$message}";
     }
 
+    private function errorAt(int $line, string $message): void
+    {
+        $this->errors[] = "Línea {$line}: {$message}";
+    }
+
+    /**
+     * Una sentencia simple debe terminar en fin de línea (o justo antes de un
+     * DEDENT/EOF). Si sobran tokens ("int x = 1 2") es un error, no algo que
+     * se pueda reinterpretar como otra sentencia.
+     */
+    private function endOfStatement(): void
+    {
+        if ($this->match("NEWLINE")) return;
+        if ($this->check("DEDENT") || $this->check("EOF")) return;
+
+        $this->error("Se esperaba fin de línea tras la sentencia (se encontró {$this->peek()->type})");
+        $this->synchronize();
+    }
+
     private function consume(string $type, string $message): Token
     {
         if ($this->check($type)) {
@@ -476,6 +531,13 @@ class Parser
         return $this->peek()->type === $type;
     }
 
+
+    private function checkAt(int $offset, string $type): bool
+    {
+        $idx = $this->pos + $offset;
+        if ($idx >= count($this->tokens)) return false;
+        return $this->tokens[$idx]->type === $type;
+    }
 
     private function checkNext(string $type): bool
     {

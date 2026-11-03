@@ -1,0 +1,4 @@
+# expect-output: before
+printStr("before")
+return
+printStr("after")

@@ -1,0 +1,2 @@
+# expect-error: Línea 2: Carácter inesperado '!'
+bool b = 1 ! 2

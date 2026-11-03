@@ -1,0 +1,3 @@
+# expect-error: Línea 3: Tabulador en la indentación
+if true:
+	printStr("tab")

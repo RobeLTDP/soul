@@ -14,6 +14,10 @@ class Lexer
 
     private array $tokens = [];
 
+    /** @var string[] Errores léxicos con formato "Línea N: mensaje" */
+    private array $errors = [];
+    private int $blockCommentStartLine = 0;
+
     private array $indentStack = [0];
 
     public function __construct(string $source)
@@ -26,10 +30,31 @@ class Lexer
     }
 
 
+    /** @return string[] */
+    public function getErrors(): array
+    {
+        return $this->errors;
+    }
+
+    private function error(string $message, ?int $line = null): void
+    {
+        $this->errors[] = "Línea " . ($line ?? $this->line) . ": " . $message;
+    }
+
+    private function describeChar(string $c): string
+    {
+        $o = ord($c);
+        return ($o >= 32 && $o < 127) ? "'" . $c . "'" : sprintf("0x%02X", $o);
+    }
+
     public function tokenize(): array
     {
         while (!$this->isAtEnd()) {
             $this->scanToken();
+        }
+
+        if ($this->inBlockComment) {
+            $this->error("Comentario de bloque '##' sin cerrar", $this->blockCommentStartLine);
         }
 
         // Cerrar indentaciones pendientes
@@ -80,6 +105,7 @@ class Lexer
             $this->advance();
             $this->advance();
             $this->inBlockComment = true;
+            $this->blockCommentStartLine = $this->line;
             return;
         }
     }
@@ -90,16 +116,31 @@ class Lexer
         // ===============================
         if ($this->atLineStart) {
 
-            // 1. Medir indentación SIN consumir
+            $len = strlen($this->source);
+
+            // 1. Medir indentación SIN consumir. Los tabuladores no son
+            //    indentación válida: se avisa una vez por línea y se cuentan
+            //    como un espacio para no encadenar errores.
             $i = $this->pos;
             $spaces = 0;
-            while ($i < strlen($this->source) && $this->source[$i] === ' ') {
+            $tabReported = false;
+            while ($i < $len && ($this->source[$i] === ' ' || $this->source[$i] === "\t")) {
+                if ($this->source[$i] === "\t" && !$tabReported) {
+                    $this->error("Tabulador en la indentación; usa espacios");
+                    $tabReported = true;
+                }
                 $spaces++;
                 $i++;
             }
 
-            // 2. Línea vacía (solo espacios + \n)
-            if ($i < strlen($this->source) && $this->source[$i] === "\n") {
+            // 2. Solo espacios hasta el final del fichero: nada que indentar
+            if ($i >= $len) {
+                $this->pos = $len;
+                return;
+            }
+
+            // 3. Línea vacía (solo espacios + \n)
+            if ($this->source[$i] === "\n") {
                 $this->pos = $i + 1;
                 $this->tokens[] = new Token("NEWLINE", null, $this->line);
                 $this->line++;
@@ -107,22 +148,15 @@ class Lexer
                 return;
             }
 
-            // 3. Calcular INDENT / DEDENT SIEMPRE
-            $currentIndent = $spaces;
-            $lastIndent = end($this->indentStack);
+            // 4. Comentarios. No alteran la indentación (igual que en Python).
+            if ($this->source[$i] === '#') {
 
-            if ($currentIndent > $lastIndent) {
-                $this->indentStack[] = $currentIndent;
-                $this->tokens[] = new Token("INDENT", null, $this->line);
-            } elseif ($currentIndent < $lastIndent) {
-                while ($currentIndent < end($this->indentStack)) {
-                    array_pop($this->indentStack);
-                    $this->tokens[] = new Token("DEDENT", null, $this->line);
+                // '##' indentado: abre un comentario de bloque
+                if ($i + 1 < $len && $this->source[$i + 1] === '#') {
+                    $this->pos = $i;
+                    return;
                 }
-            }
 
-            // 4. Línea comentada (ya con indent fijado)
-            if ($i < strlen($this->source) && $this->source[$i] === '#') {
                 $this->pos = $i;
                 while (!$this->isAtEnd() && $this->peek() !== "\n") {
                     $this->advance();
@@ -138,8 +172,28 @@ class Lexer
                 return;
             }
 
-            // 5. Consumir espacios reales
-            $this->pos += $spaces;
+            // 5. Calcular INDENT / DEDENT
+            $currentIndent = $spaces;
+            $lastIndent = end($this->indentStack);
+
+            if ($currentIndent > $lastIndent) {
+                $this->indentStack[] = $currentIndent;
+                $this->tokens[] = new Token("INDENT", null, $this->line);
+            } elseif ($currentIndent < $lastIndent) {
+                while ($currentIndent < end($this->indentStack)) {
+                    array_pop($this->indentStack);
+                    $this->tokens[] = new Token("DEDENT", null, $this->line);
+                }
+
+                // El nivel al que volvemos debe haber existido antes
+                if ($currentIndent !== end($this->indentStack)) {
+                    $this->error("Indentación inconsistente: no coincide con ningún nivel anterior");
+                    $this->indentStack[count($this->indentStack) - 1] = $currentIndent;
+                }
+            }
+
+            // 6. Consumir espacios reales
+            $this->pos = $i;
             $this->atLineStart = false;
         }
 
@@ -151,6 +205,14 @@ class Lexer
         $c = $this->advance();
 
         if ($c === ' ' || $c === "\t") return;
+
+        // Comentario de línea tras código: "x = 1  # nota"
+        if ($c === '#') {
+            while (!$this->isAtEnd() && $this->peek() !== "\n") {
+                $this->advance();
+            }
+            return;
+        }
 
         if ($c === "\n") {
             $this->tokens[] = new Token("NEWLINE", null, $this->line);
@@ -187,6 +249,13 @@ class Lexer
         if ($c === ':') { $this->tokens[] = new Token("COLON", null, $this->line); return; }
         if ($c === '[') { $this->tokens[] = new Token("LBRACKET", null, $this->line); return; }
         if ($c === ']') { $this->tokens[] = new Token("RBRACKET", null, $this->line); return; }
+
+        if ($c === '!') {
+            $this->error("Carácter inesperado '!' (¿querías '!=' o '!!'?)");
+            return;
+        }
+
+        $this->error("Carácter inesperado " . $this->describeChar($c));
     }
 
 
@@ -230,18 +299,31 @@ class Lexer
     {
         $this->insideString = true;
 
+        $startLine = $this->line;
         $value = '';
+        $closed = false;
 
-        while (!$this->isAtEnd() && $this->peek() !== '"') {
+        // Las cadenas pueden ocupar varias líneas (library/tools/analyzer.soul
+        // lo usa); solo es un error si el fichero acaba sin cerrarla.
+        while (!$this->isAtEnd()) {
+            if ($this->peek() === '"') {
+                $this->advance();
+                $closed = true;
+                break;
+            }
+            if ($this->peek() === "\n") {
+                $this->line++;
+            }
             $value .= $this->advance();
         }
 
-        if (!$this->isAtEnd()) {
-            $this->advance();
+        $this->insideString = false;
+
+        if (!$closed) {
+            $this->error("Cadena sin cerrar (empieza en la línea $startLine)", $startLine);
         }
 
-        $this->insideString = false;
-        $this->tokens[] = new Token("STRING", $value, $this->line);
+        $this->tokens[] = new Token("STRING", $value, $startLine);
     }
 
 
@@ -259,6 +341,14 @@ class Lexer
             "bool"      => "TYPE",
             "str"       => "TYPE",
             "statinfo"  => "TYPE",
+
+            // Tipos de handle devueltos por builtins (ver Analyzer::analyzeCall).
+            // Antes se lexaban como identificadores y el parser los descartaba
+            // en silencio: `diriter it = listdir(x)` se leía como `it = listdir(x)`.
+            "diriter"      => "TYPE",
+            "overviewinfo" => "TYPE",
+            "analyzeinfo"  => "TYPE",
+            "netconn"      => "TYPE",
 
         ];
 
@@ -279,6 +369,7 @@ class Lexer
             "break" => "BREAK",
             "continue" => "CONTINUE",
             "stop" => "STOP",
+            "return" => "RETURN",
             "not" => "NOT",
         ];
 

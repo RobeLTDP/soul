@@ -1,0 +1,3 @@
+# expect-error: Línea 3: Carácter inesperado '@'
+str ok = "fine"
+int x = 1 @ 2

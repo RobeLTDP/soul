@@ -1,0 +1,25 @@
+# expect: ok
+##
+Valid program exercising comments, blocks, handle types and return.
+##
+
+str folder = arg("--folder")   # trailing comment after code
+if folder == "":
+    # a comment-only line inside a block must not change indentation
+    printStr("missing")
+    return
+
+        # even a wildly indented comment-only line is ignored
+diriter it = listdir(folder)
+int n = 0
+while true:
+    str name = dir_next(it)
+    if name == 0:
+        break
+    n = n + 1
+dir_close(it)
+
+str multi = "a string
+that spans two lines"
+printStr(multi)
+printStr(toStr(n))

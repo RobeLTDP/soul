@@ -1,0 +1,2 @@
+# expect-build-error: no se puede compilar
+removeByExt("only-one-argument")

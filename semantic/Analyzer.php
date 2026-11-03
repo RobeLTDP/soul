@@ -20,10 +20,12 @@ require_once SOUL_ROOT . '/ast/CallExpr.php';
 require_once SOUL_ROOT . '/ast/BinaryExpr.php';
 require_once SOUL_ROOT . '/ast/UnaryExpr.php';
 require_once SOUL_ROOT . '/ast/CheckExpr.php';
+require_once SOUL_ROOT . '/ast/ReturnStmt.php';
 class Analyzer
 {
     private array $scopes = [];
     private array $errors = [];
+    private int $loopDepth = 0;
 
     public function analyze(Program $program): void
     {
@@ -51,7 +53,8 @@ class Analyzer
 
     public function getErrors(): array
     {
-        return $this->errors;
+        // Los argumentos de algunas llamadas se analizan dos veces: sin duplicados.
+        return array_values(array_unique($this->errors));
     }
 
     // -----------------------------
@@ -109,13 +112,23 @@ class Analyzer
         } elseif ($stmt instanceof CallExpr) {
             $this->analyzeExpression($stmt);
         } elseif ($stmt instanceof StopStmt) {
-            // siempre válido
+            if ($this->loopDepth === 0) {
+                $this->error("'stop' fuera de un bucle");
+            }
         } elseif ($stmt instanceof Assignment) {
             $this->analyzeAssignment($stmt);      
         } elseif ($stmt instanceof IfStmt) {
             $this->analyzeIf($stmt);          
         } elseif ($stmt instanceof BreakStmt) {
-        } elseif ($stmt instanceof ContinueStmt) {                    
+            if ($this->loopDepth === 0) {
+                $this->error("'break' fuera de un bucle");
+            }
+        } elseif ($stmt instanceof ContinueStmt) {
+            if ($this->loopDepth === 0) {
+                $this->error("'continue' fuera de un bucle");
+            }
+        } elseif ($stmt instanceof ReturnStmt) {
+            // válido en cualquier sitio: termina el programa
         } elseif ($stmt instanceof WhileStmt) {
             $this->analyzeWhile($stmt);        
         } else {
@@ -133,9 +146,11 @@ class Analyzer
         }
 
         $this->enterScope();
+        $this->loopDepth++;
         foreach ($stmt->body as $s) {
             $this->analyzeStatement($s);
         }
+        $this->loopDepth--;
         $this->leaveScope();
     }
 
@@ -297,9 +312,11 @@ class Analyzer
         $this->enterScope();
         $this->declareVar($stmt->varName, $stmt->varType);
 
+        $this->loopDepth++;
         foreach ($stmt->body as $s) {
             $this->analyzeStatement($s);
         }
+        $this->loopDepth--;
 
         $this->leaveScope();
     }

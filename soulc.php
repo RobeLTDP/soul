@@ -194,7 +194,12 @@ if ($command === 'plan') {
     }
 
     $compiler = new Compiler();
-    $ir = $compiler->compileToIrOnly($scriptPath);
+    try {
+        $ir = $compiler->compileToIrOnly($scriptPath);
+    } catch (RuntimeException $e) {
+        fwrite(STDERR, "ERROR: " . $e->getMessage() . "\n");
+        exit(1);
+    }
 
     $recorder = new PlanRecorder();
 
@@ -383,7 +388,12 @@ if ($command === 'build') {
 
     $compiler = new Compiler(dumpIR: $dumpIR, dumpC: $dumpC, trace: $trace);
     //$result = $compiler->compileFile($scriptPath, $outDir, runGcc: !$dumpIR && !$dumpC);
-    $result = $compiler->compileFile($scriptPath,    $outDir,    runGcc: !$dumpIR && !$dumpC,    dockerMode: $docker);
+    try {
+        $result = $compiler->compileFile($scriptPath,    $outDir,    runGcc: !$dumpIR && !$dumpC,    dockerMode: $docker);
+    } catch (RuntimeException $e) {
+        fwrite(STDERR, "ERROR: " . $e->getMessage() . "\n");
+        exit(1);
+    }
 
     echo "BUILD OK\n";
     echo "C:   {$result['cPath']}\n";

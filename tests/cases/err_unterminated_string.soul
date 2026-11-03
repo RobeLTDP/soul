@@ -1,0 +1,3 @@
+# expect-error: Línea 2: Cadena sin cerrar (empieza en la línea 2)
+str s = "never closed
+printStr(s)
