@@ -1,0 +1,3 @@
+# expect-error: 'break' fuera de un bucle
+printStr("hi")
+break

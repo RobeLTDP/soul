@@ -1,0 +1,5 @@
+# expect-error: Línea 5: Indentación inconsistente
+if true:
+    if true:
+        printStr("deep")
+  printStr("odd")

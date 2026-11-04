@@ -1,0 +1,5 @@
+# expect-output: 42
+# The text after '#' must be ignored completely. The old lexer dropped the '#'
+# and lexed "x = 99" as code, which turned the result into 140.
+int x = 1   # x = 99
+printStr(toStr(x + 41))

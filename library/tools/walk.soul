@@ -25,7 +25,7 @@ while true:
 ")
 
 
-    any st = stat(p)
+    statinfo st = stat(p)
     if isdir(st):
         printStr(p)
 

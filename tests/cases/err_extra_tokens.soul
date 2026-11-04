@@ -1,0 +1,2 @@
+# expect-error: Línea 2: Se esperaba fin de línea tras la sentencia
+int x = 1 2

@@ -1,0 +1,2 @@
+# expect-error: Variable 'nope' no declarada
+printStr(nope)

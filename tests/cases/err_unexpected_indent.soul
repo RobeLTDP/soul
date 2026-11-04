@@ -1,0 +1,3 @@
+# expect-error: Línea 3: Indentación inesperada
+int x = 1
+    int y = 2

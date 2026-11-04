@@ -1,0 +1,2 @@
+# expect-error: 'continue' fuera de un bucle
+continue

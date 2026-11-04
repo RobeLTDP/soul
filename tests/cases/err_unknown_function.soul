@@ -1,0 +1,2 @@
+# expect-error: Función 'frobnicate' no existe
+frobnicate("x")

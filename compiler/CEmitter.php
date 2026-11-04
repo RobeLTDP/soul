@@ -263,6 +263,15 @@ final class CEmitter
             //$line = $this->emitInstruction($program, $inst);
             $line = $this->emitInstruction($program, $inst, $i, $openHandleVars);
 
+            // El emisor señala llamadas mal formadas devolviendo un comentario
+            // C "/* ERROR ... */". Antes el binario se generaba igualmente y la
+            // llamada simplemente no hacía nada; ahora es un error de compilación.
+            if (str_contains($line, '/* ERROR') || str_contains($line, '/* TODO unsupported opcode')) {
+                throw new RuntimeException(
+                    "CEmitter: instrucción #$i ({$inst->opCode}) no se puede compilar: " . trim($line)
+                );
+            }
+
             if ($line !== '') {
                 $out[] = $line;
             }
@@ -730,6 +739,25 @@ final class CEmitter
         '    a->topN = (int)topN;',
         '',
         '    soul_an_scan(path, a);',
+        '',
+        '    // The top list is maintained as "replace the smallest entry", so it is',
+        '    // unordered. Sort it by size (largest first) and drop unused slots, so',
+        '    // that analyzeTopPath(a, 0) really is the biggest file.',
+        '    int filled = 0;',
+        '    for (int i = 0; i < a->topN; i++) if (a->topPath[i]) filled++;',
+        '    for (int i = 1; i < a->topN; i++) {',
+        '        const char* p = a->topPath[i];',
+        '        int64_t s = a->topSize[i];',
+        '        int j = i - 1;',
+        '        while (j >= 0 && a->topSize[j] < s) {',
+        '            a->topPath[j + 1] = a->topPath[j];',
+        '            a->topSize[j + 1] = a->topSize[j];',
+        '            j--;',
+        '        }',
+        '        a->topPath[j + 1] = p;',
+        '        a->topSize[j + 1] = s;',
+        '    }',
+        '    a->topN = filled;',
         '',
         '    return (uintptr_t)a;',
         '}',

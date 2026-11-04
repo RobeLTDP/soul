@@ -1,0 +1,4 @@
+# expect-error: Línea 2: Comentario de bloque '##' sin cerrar
+##
+this block comment never ends
+int x = 1

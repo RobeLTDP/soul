@@ -24,6 +24,30 @@ final class IrRunner
         'stat'      => true,
         'workerId'  => true,
         'dir_next'  => true,
+
+        // Funciones puras: sin ellas `if startswith(password, "...")` se
+        // evaluaba como falso y `soul plan` seguía la rama equivocada.
+        'startswith' => true,
+        'endswith'   => true,
+        'toStr'      => true,
+        'toInt'      => true,
+        'buildstr'   => true,
+        'isfile'     => true,
+        'isdir'      => true,
+        'mtime'      => true,
+        'now'        => true,
+    ];
+
+    /**
+     * Builtins que el modo plan ignora sin que importe: solo imprimen o dan
+     * formato. Cualquier otro builtin no simulado hace el plan incompleto.
+     */
+    private array $planHarmless = [
+        'printStr' => true, 'print' => true,
+        'json_encode' => true, 'json_object' => true,
+        'json_pair_str' => true, 'json_pair_int' => true,
+        'workerId' => true, 'workerCount' => true,
+        'argc' => true, 'argv' => true,
     ];
 
 
@@ -147,6 +171,11 @@ final class IrRunner
             case OpCode::LOAD_CONST:
                 [$lit, $dst] = $inst->operands;
                 $this->regs[$dst->name] = $lit->value;
+                break;
+
+            case OpCode::EXIT:
+                // Detiene la ejecución (el bucle principal hace ip++ después).
+                $this->ip = PHP_INT_MAX - 1;
                 break;
 
             case OpCode::LOAD_VAR:
@@ -708,7 +737,41 @@ private function simulateBuiltin(string $name, array $args)
             case 'length':
                 return strlen((string)$args[0]);
 
+            case 'startswith':
+                return str_starts_with((string)($args[0] ?? ''), (string)($args[1] ?? '')) ? 1 : 0;
+
+            case 'endswith':
+                return str_ends_with((string)($args[0] ?? ''), (string)($args[1] ?? '')) ? 1 : 0;
+
+            case 'toStr':
+                return (string)($args[0] ?? '');
+
+            case 'toInt':
+                return (int)($args[0] ?? 0);
+
+            case 'buildstr':
+                return implode('', array_map('strval', $args));
+
+            case 'isfile':
+                return is_file((string)($args[0] ?? '')) ? 1 : 0;
+
+            case 'isdir':
+                return is_dir((string)($args[0] ?? '')) ? 1 : 0;
+
+            case 'mtime':
+                return (int)(@filemtime((string)($args[0] ?? '')) ?: 0);
+
+            case 'now':
+                return time();
+
             default:
+                // En modo plan, un builtin que no sabemos simular (removeByExt,
+                // backup, removeTree, ...) no puede quedar en silencio: el plan
+                // se marcaría como "solo lectura" cuando el programa real borra.
+                if ($this->planMode && $this->recorder !== null && !isset($this->planHarmless[$name])) {
+                    $this->recorder->recordUnsupported($name);
+                }
+
                 // fallback debug
                 $printable = array_map(function ($a) {
                     if (is_scalar($a) || $a === null) return $a;

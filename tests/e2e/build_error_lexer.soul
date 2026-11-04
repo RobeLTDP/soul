@@ -1,0 +1,2 @@
+# expect-build-error: Carácter inesperado '@'
+int x = 1 @ 2

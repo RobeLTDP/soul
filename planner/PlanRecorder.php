@@ -11,9 +11,17 @@ final class PlanRecorder
 
     private int $filesTouched = 0;
 
+    /** @var array<string,int> builtins que el plan no sabe simular */
+    private array $unsupported = [];
+
     /* ----------------------------------------------------- */
     /* RECORD                                                */
     /* ----------------------------------------------------- */
+
+    public function recordUnsupported(string $builtin): void
+    {
+        $this->unsupported[$builtin] = ($this->unsupported[$builtin] ?? 0) + 1;
+    }
 
     public function record(string $type, array $data = []): void
     {
@@ -86,6 +94,14 @@ final class PlanRecorder
 
         echo "\nRisk level: " . $this->riskLevel() . "\n";
 
+        if ($this->unsupported) {
+            echo "\nWARNING: this plan is INCOMPLETE. Plan mode cannot simulate the\n";
+            echo "builtins below, so the real run may do more than is listed above:\n";
+            foreach ($this->unsupported as $name => $n) {
+                echo "  - $name" . ($n > 1 ? " (x$n)" : "") . "\n";
+            }
+        }
+
         echo "\nTimeline (first $timeline)\n";
 
         foreach (array_slice($this->actions, 0, $timeline) as [$t, $d]) {
@@ -103,6 +119,10 @@ final class PlanRecorder
     {
         if (isset($this->counts['DELETE']) || isset($this->counts['DELETE_DIR'])) {
             return 'HIGH (contains DELETE)';
+        }
+
+        if ($this->unsupported) {
+            return 'UNKNOWN (plan cannot simulate: ' . implode(', ', array_keys($this->unsupported)) . ')';
         }
 
         if (isset($this->counts['COPY']) || isset($this->counts['WRITE'])) {

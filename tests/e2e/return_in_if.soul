@@ -1,0 +1,7 @@
+# expect-output: missing
+str a = arg("--x")
+if a == "":
+    printStr("missing")
+    return
+
+printStr("ran")
