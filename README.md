@@ -24,31 +24,114 @@ Python and Bash work fine at small scale. At 10K, 100K, or 1M files they break d
 
 Soul is built for exactly this problem: filesystem tasks that need to be fast, explicit, and deployable anywhere.
 
-**Benchmark — full folder scan and analysis, 210K files** *(author's measurement)*:
+## Benchmarks
 
-| Tool   | Time   |
-|--------|--------|
-| Bash   | 2.4s   |
-| Go     | 0.71s  |
-| **Soul**   | **0.39s**  |
-
-**Benchmark — incremental backup, ~1,600 files, 1.4 GB** *(author's measurement)*:
-
-| Tool   | Time   |
-|--------|--------|
-| Python | 38s    |
-| Go     | 4.3s   |
-| **Soul**   | **1.9s**   |
-
-Measured with `/usr/bin/time -v` on Linux, NVMe SSD, cold cache. Soul binaries compiled with `musl-gcc -O3 -static -s`.
-
-These numbers come from the author's own datasets and machine. To measure on yours, use the reproducible suite in [`bench/`](bench/README.md): it generates a deterministic dataset, **checks every tool's answer against a reference before timing it**, and compares Soul with Go, Python, `find`, `rsync` and `cp`:
+Reproducible suite: [`bench/`](bench/README.md). It generates a deterministic dataset, **checks every tool's answer against a reference before timing it** (scan results must match exactly; backup destinations are SHA-256-checked), runs the tools in interleaved rounds and reports median, min, max and standard deviation.
 
 ```bash
 python3 bench/run.py --files 20000 --runs 7
 ```
 
-Two things to know when reading any backup comparison: `soul backup` verifies copies by hash unless you pass `--no-verify`, and a single `soul` process uses one worker — multi-worker runs are launched with `soul run --parallel=N`. `bench/README.md` has a reference run, including where Soul is *not* the fastest.
+**Reference run** (2 vCPU Intel Xeon 2.1 GHz VM, Linux 6.18, 8 GB RAM, tmpfs so there is no disk cost, warm cache, 20,000 small files, 7 runs, Go 1.24, Python 3.13; Soul built with `gcc -O3`, dynamic glibc):
+
+| Task | Soul | Go sequential | Go 4 workers | Python | Other |
+|---|---|---|---|---|---|
+| Scan 20K files (median) | **0.033 s** | 0.050 s | 0.035 s | 0.067 s | `find`+`awk` 0.056 s |
+| Incremental backup, 5% changed (median) | **0.123 s** | 0.134 s | 0.145 s | 0.206 s | — |
+| First (full) backup (median) | 0.680 s | 0.593 s | 0.405 s | 0.820 s | `cp -a` 0.341 s |
+
+What this supports, and what it does not:
+
+- **Scan:** Soul is about 1.5x faster than sequential Go and `find`+`awk`, 2x faster than Python, and level with Go using all cores.
+- **Incremental backup:** Soul ties with Go using 4 workers and is 0-25% ahead of sequential Go. This workload does **not** show a 2x advantage over Go.
+- **Full copy on tmpfs:** `cp -a` and Go with 4 workers are faster than Soul.
+- `soul backup` forks 4 worker processes by itself and verifies copies by hash unless you pass `--no-verify`; pinned to a single process (`SOUL_WORKER_COUNT=1`) it is slower than sequential Go. `bench/README.md` lists every variant, the ext4 and big-file runs, and one result I could not explain (Soul copying 2-5x faster than Go on this VM's ext4 volume).
+- **Not covered:** `rsync`, static musl builds, cold cache, NVMe, more than 2 cores.
+
+**Earlier measurements by the author** (different hardware, **not reproduced** by the suite above; they show the same direction but larger gaps than the reference run, so treat them as indicative until re-measured with `bench/run.py` on that machine):
+
+| Task | Bash | Python | Go | **Soul** |
+|---|---|---|---|---|
+| Scan and analysis, 210K files | 2.4 s | — | 0.71 s | **0.39 s** |
+| Incremental backup, ~1,600 files, 1.4 GB | — | 38 s | 4.3 s | **1.9 s** |
+
+(`/usr/bin/time -v`, Linux, NVMe SSD, cold cache, Soul built with `musl-gcc -O3 -static -s`.)
+
+---
+
+## Examples (real output)
+
+All output below was produced by running the tools in this repository.
+
+**Errors are reported with a line number and the build stops:**
+
+```text
+$ cat bad.soul
+str name = "report
+printStr(name)
+
+$ soul build bad.soul
+== LEXER ==
+ERROR: LEXER ERRORS:
+Línea 1: Cadena sin cerrar (empieza en la línea 1)
+```
+
+```text
+$ soul build bad2.soul        # `break` placed outside any loop
+...
+ERROR: SEMANTIC ERRORS:
+'break' fuera de un bucle
+```
+
+**`soul plan` says when it cannot simulate something** (it used to report "LOW (read only)" for a program that deletes files):
+
+```text
+$ soul plan unsimulated_delete.soul
+[builtin] removeByExt(/nonexistent-soul-test-dir, .log)
+...
+Risk level: UNKNOWN (plan cannot simulate: removeByExt)
+
+WARNING: this plan is INCOMPLETE. Plan mode cannot simulate the
+builtins below, so the real run may do more than is listed above:
+  - removeByExt
+```
+
+**`analyzer` lists the biggest files largest-first** (it used to return the right files in the wrong order):
+
+```text
+$ analyzer --folder demo --top 3
+Files:
+4
+Dirs:
+2
+Size:
+115100
+
+Extensions:
+txt -> 1 files, 100 bytes
+log -> 1 files, 5000 bytes
+bin -> 2 files, 110000 bytes
+
+Top biggest files:
+demo/sub/big.bin -> 90000
+demo/sub/mid.bin -> 20000
+demo/medium.log -> 5000
+```
+
+**`delete-bigger-than` requires `--minSize`** (older builds ignored the flag and deleted every non-empty file):
+
+```text
+$ delete-bigger-than --folder demo --password CONFIRM_DELETE
+ERROR: missing --minSize {bytes}
+Password protection confirmed
+DONE                              # nothing was deleted: all 4 files are still there
+
+$ delete-bigger-than --folder demo --password CONFIRM_DELETE --minSize 10000
+Removing big files...
+DONE                              # only big.bin and mid.bin (both > 10000 bytes) were removed
+```
+
+The same cases run automatically in `php tests/run.php` (39 tests, in `tests/cases`, `tests/e2e`, `tests/plan`).
 
 ---
 
